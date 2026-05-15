@@ -12,6 +12,7 @@ import {
   ResizablePanelGroup,
 } from "@/components/ui/resizable";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { useDiffViewMode } from "@/hooks/use-diff-view-mode";
 import { useFontZoom } from "@/hooks/use-font-zoom";
 import {
   createDefaultFileState,
@@ -41,8 +42,18 @@ import type {
   SessionFileState,
 } from "@/types/review";
 
+type JumpTarget = {
+  fileId: string;
+  diffPosition?: number;
+  expandSection?: "private" | "draft";
+  requestedAt: number;
+};
+
+type InspectorMode = "file" | "ledger";
+
 function App() {
   const { fontZoom, resetFontZoom } = useFontZoom();
+  const [, , toggleDiffViewMode] = useDiffViewMode();
   const [repoPath, setRepoPath] = useState("");
   const [baseRef, setBaseRef] = useState("");
   const [headRef, setHeadRef] = useState("");
@@ -61,6 +72,8 @@ function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [isRefsLoading, setIsRefsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [jumpTarget, setJumpTarget] = useState<JumpTarget | null>(null);
+  const [inspectorMode, setInspectorMode] = useState<InspectorMode>("file");
   const refLoadId = useRef(0);
   const lastSeenActiveManifest = useRef<string | null>(null);
 
@@ -136,6 +149,7 @@ function App() {
     setSession(nextSession);
     setWorkspaceState(loadWorkspaceState(nextSession.id));
     setActiveFileId(nextSession.files[0]?.id ?? null);
+    setInspectorMode("file");
     setReviewHistory(rememberReviewSession(nextSession));
 
     if (nextSession.order.manifestPath) {
@@ -351,6 +365,27 @@ function App() {
     void loadRefsForRepo(repoPath, { applyDefaults: false });
   }, [isRefsLoading, loadRefsForRepo, repoPath]);
 
+  const expandSectionHint = useMemo(() => {
+    if (!jumpTarget?.expandSection) {
+      return null;
+    }
+    return { section: jumpTarget.expandSection, key: jumpTarget.requestedAt };
+  }, [jumpTarget]);
+
+  const handleScrollHandled = useCallback(() => setJumpTarget(null), []);
+
+  const jumpToNote = useCallback(
+    (target: { fileId: string; diffPosition?: number; expandSection?: "private" | "draft" }) => {
+      setInspectorMode("file");
+      if (target.fileId !== activeFileId) {
+        // The existing useEffect that depends on activeFileId will advance unseen → viewed.
+        setActiveFileId(target.fileId);
+      }
+      setJumpTarget({ ...target, requestedAt: Date.now() });
+    },
+    [activeFileId],
+  );
+
   const selectFile = useCallback(
     (fileId: string) => {
       setActiveFileId(fileId);
@@ -449,6 +484,46 @@ function App() {
     }
   }, [session, workspaceState]);
 
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      const target = event.target as HTMLElement | null;
+      const isEditing =
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable);
+      if (isEditing) {
+        return;
+      }
+      if ((event.metaKey || event.ctrlKey) && !event.shiftKey && event.key === "\\") {
+        event.preventDefault();
+        toggleDiffViewMode();
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [toggleDiffViewMode]);
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      const target = event.target as HTMLElement | null;
+      const isEditing =
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable);
+      if (isEditing) {
+        return;
+      }
+      if ((event.metaKey || event.ctrlKey) && !event.shiftKey && event.key.toLowerCase() === "j") {
+        event.preventDefault();
+        setInspectorMode((current) => (current === "ledger" ? "file" : "ledger"));
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
   return (
     <TooltipProvider>
       <main className="rd-app dark flex h-[100dvh] min-h-[100dvh] w-full max-w-full flex-col overflow-hidden">
@@ -458,6 +533,7 @@ function App() {
           headRef={headRef}
           isLoading={isLoading}
           session={session}
+          workspaceState={workspaceState}
           fontZoom={fontZoom}
           repoRefs={repoRefs}
           recentRepos={recentRepos}
@@ -479,7 +555,7 @@ function App() {
         />
 
         {error ? (
-          <div className="flex items-center gap-2 border-b border-[var(--rd-clay-border)] bg-[var(--rd-clay-soft)] px-4 py-2 text-sm text-[var(--rd-clay)]">
+          <div className="flex items-center gap-2 border-b border-[var(--rd-del-line)] bg-[var(--rd-del-bg)] px-4 py-2 text-sm text-[var(--rd-del)]">
             <AlertCircle className="size-4" />
             {error}
           </div>
@@ -495,24 +571,30 @@ function App() {
                 onSelectFile={selectFile}
               />
             </ResizablePanel>
-            <ResizableHandle withHandle />
+            <ResizableHandle />
             <ResizablePanel defaultSize="52%" minSize="36%">
               <DiffCanvas
                 file={activeFile}
                 fileState={activeFileState}
+                jumpTarget={jumpTarget}
+                onScrollHandled={handleScrollHandled}
                 onMarkViewed={markActiveViewed}
                 onMarkReviewed={markActiveReviewed}
                 onSaveInlineComment={saveInlineComment}
                 onDeleteInlineComment={deleteInlineComment}
               />
             </ResizablePanel>
-            <ResizableHandle withHandle />
+            <ResizableHandle />
             <ResizablePanel defaultSize="24%" minSize="20%" maxSize="36%">
               <Inspector
                 session={session}
                 file={activeFile}
                 fileState={activeFileState}
                 workspaceState={workspaceState}
+                mode={inspectorMode}
+                onModeChange={setInspectorMode}
+                onJumpToNote={jumpToNote}
+                expandSectionHint={expandSectionHint}
                 onPatchFileState={patchFileState}
                 onMarkViewed={markActiveViewed}
                 onMarkReviewed={markActiveReviewed}

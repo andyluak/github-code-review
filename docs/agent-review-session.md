@@ -105,6 +105,6 @@ review-desk activate .review-desk/sessions/pr-review.review-session.json
 
 - Files in `fileOrder` are shown first, grouped by the supplied `group`.
 - Diff files not listed by the agent are appended under `Not ordered by agent`.
-- `agentNotes` appear in the Inspector's `Agent` tab for that file.
+- `agentNotes` appear in the Inspector's `Agent context` section for that file.
 - Missing ordered files, missing note targets, and missing excluded paths are shown as import warnings.
 - Private notes and viewed/reviewed status remain local to Review Desk.

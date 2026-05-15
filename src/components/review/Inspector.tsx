@@ -1,21 +1,25 @@
+import { useEffect, useState, type ReactNode } from "react";
 import {
   Bot,
-  CheckCircle2,
-  Eye,
+  ChevronDown,
   MessageSquare,
   NotebookPen,
   Send,
 } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Separator } from "@/components/ui/separator";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { compactPath } from "@/lib/format";
-import { statusTone } from "@/lib/status";
+import {
+  collectLedger,
+  countByKind,
+  filterLedger,
+  groupLedgerByFile,
+  lineRangeLabel as ledgerLineRangeLabel,
+  type LedgerEntry,
+  type LedgerFilter,
+} from "@/lib/ledger";
 import type {
-  InlineComment,
   ReviewFile,
   ReviewSession,
   ReviewWorkspaceState,
@@ -27,295 +31,429 @@ type InspectorProps = {
   file: ReviewFile | null;
   fileState: SessionFileState | null;
   workspaceState: ReviewWorkspaceState;
+  mode: "file" | "ledger";
+  onModeChange: (mode: "file" | "ledger") => void;
+  onJumpToNote: (target: {
+    fileId: string;
+    diffPosition?: number;
+    expandSection?: "private" | "draft";
+  }) => void;
   onPatchFileState: (fileId: string, patch: Partial<SessionFileState>) => void;
   onMarkViewed: () => void;
   onMarkReviewed: () => void;
+  expandSectionHint?: { section: "private" | "draft"; key: number } | null;
 };
 
-export function Inspector({
-  session,
-  file,
-  fileState,
-  workspaceState,
-  onPatchFileState,
-  onMarkViewed,
-  onMarkReviewed,
-}: InspectorProps) {
-  const basket = session.files.flatMap((candidate): ReviewBasketItem[] => {
-    const state = workspaceState[candidate.id];
-    const items: ReviewBasketItem[] = [];
-    const draft = state?.publishableDraft.trim() ?? "";
+type SectionKey = "private" | "draft" | "agent";
 
-    if (draft) {
-      items.push({
-        id: `${candidate.id}-file-draft`,
-        path: candidate.path,
-        scope: "File draft",
-        body: draft,
-      });
-    }
-
-    for (const comment of state?.inlineComments ?? []) {
-      if (comment.visibility !== "review") {
-        continue;
-      }
-
-      items.push({
-        id: comment.id,
-        path: candidate.path,
-        scope: `Line comment - ${lineRangeLabel(comment)}`,
-        body: comment.body,
-      });
-    }
-
-    return items;
-  });
+export function Inspector(props: InspectorProps) {
+  const { session, mode, onModeChange, workspaceState } = props;
+  const ledger = collectLedger(session, workspaceState);
+  const basket = ledger.filter(
+    (entry) => entry.kind === "public-file-draft" || entry.kind === "review-inline",
+  );
 
   return (
-    <aside className="flex h-full min-h-0 flex-col border-l border-[var(--rd-border)] bg-[var(--rd-bg-soft)]">
-      <div className="border-b border-[var(--rd-border)] px-4 py-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <div className="text-sm font-semibold text-[var(--rd-text)]">Inspector</div>
-            <div className="mt-1 text-xs text-[var(--rd-muted)]">
-              Notes stay private until promoted
-            </div>
-          </div>
-          {file ? (
-            <Badge
-              className={`border ${statusTone(fileState?.status ?? file.viewedStatus)}`}
-            >
-              {fileState?.status ?? file.viewedStatus}
-            </Badge>
-          ) : null}
-        </div>
-      </div>
+    <aside className="flex h-full min-h-0 flex-col border-l border-[var(--rd-hair)] bg-[var(--rd-ink)]">
+      <InspectorHeader mode={mode} onModeChange={onModeChange} />
 
       <ScrollArea className="min-h-0 flex-1">
-        <div className="space-y-4 p-4">
-          {file ? (
-            <>
-              <div className="rounded-lg border border-[var(--rd-border)] bg-[var(--rd-panel)] p-3 shadow-[inset_0_1px_0_rgba(255,236,190,0.035)]">
-                <div className="text-xs text-[var(--rd-muted)]">Current file</div>
-                <div className="mt-2 break-words text-sm font-medium text-[var(--rd-text)]">
-                  {compactPath(file.path, 80)}
-                </div>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <Badge className="border-[var(--rd-sage-border)] bg-[var(--rd-sage-soft)] text-[var(--rd-sage)]">
-                    +{file.additions}
-                  </Badge>
-                  <Badge className="border-[var(--rd-clay-border)] bg-[var(--rd-clay-soft)] text-[var(--rd-clay)]">
-                    -{file.deletions}
-                  </Badge>
-                  <Badge className="border-[var(--rd-border)] bg-[var(--rd-bg)] text-[var(--rd-text-soft)]">
-                    {file.changeKind}
-                  </Badge>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="border-[var(--rd-border)] bg-[var(--rd-panel-2)] text-[var(--rd-text-soft)] hover:border-[var(--rd-accent-border)] hover:bg-[var(--rd-panel-3)]"
-                  onClick={onMarkViewed}
-                >
-                  <Eye className="size-4" />
-                  Viewed
-                </Button>
-                <Button
-                  type="button"
-                  className="bg-[var(--rd-accent)] text-[var(--rd-ink)] hover:bg-[var(--rd-accent-strong)]"
-                  onClick={onMarkReviewed}
-                >
-                  <CheckCircle2 className="size-4" />
-                  Reviewed
-                </Button>
-              </div>
-
-              <Tabs defaultValue="private" className="w-full">
-                <TabsList className="grid w-full grid-cols-3 border border-[var(--rd-border)] bg-[var(--rd-panel)]">
-                  <TabsTrigger value="private">
-                    <NotebookPen className="size-3.5" />
-                    Private
-                  </TabsTrigger>
-                  <TabsTrigger value="draft">
-                    <MessageSquare className="size-3.5" />
-                    Draft
-                  </TabsTrigger>
-                  <TabsTrigger value="agent">
-                    <Bot className="size-3.5" />
-                    Agent
-                  </TabsTrigger>
-                </TabsList>
-
-                <TabsContent value="private" className="mt-3">
-                  <Textarea
-                    value={fileState?.privateNote ?? ""}
-                    onChange={(event) =>
-                      onPatchFileState(file.id, {
-                        privateNote: event.currentTarget.value,
-                      })
-                    }
-                    placeholder="Notes for me. These never publish to GitHub."
-                    className="min-h-36 resize-none border-[var(--rd-border)] bg-[var(--rd-bg)] text-sm text-[var(--rd-text)] placeholder:text-[var(--rd-faint)]"
-                  />
-                </TabsContent>
-
-                <TabsContent value="draft" className="mt-3">
-                  <Textarea
-                    value={fileState?.publishableDraft ?? ""}
-                    onChange={(event) =>
-                      onPatchFileState(file.id, {
-                        publishableDraft: event.currentTarget.value,
-                      })
-                    }
-                    placeholder="Draft a publishable review comment."
-                    className="min-h-36 resize-none border-[var(--rd-border)] bg-[var(--rd-bg)] text-sm text-[var(--rd-text)] placeholder:text-[var(--rd-faint)]"
-                  />
-                </TabsContent>
-
-                <TabsContent value="agent" className="mt-3">
-                  <div className="rounded-lg border border-[var(--rd-border)] bg-[var(--rd-bg)] p-4">
-                    <div className="flex items-center gap-2 text-sm font-medium text-[var(--rd-text-soft)]">
-                      <Bot className="size-4 text-[var(--rd-accent)]" />
-                      {session.order.source === "agent"
-                        ? session.order.createdBy ?? "Agent session"
-                        : "No agent session"}
-                    </div>
-                    {file.reviewReason ? (
-                      <p className="mt-2 text-xs leading-5 text-[var(--rd-text-soft)]">
-                        {file.reviewReason}
-                      </p>
-                    ) : null}
-                    {file.agentNotes.length > 0 ? (
-                      <div className="mt-3 space-y-2">
-                        {file.agentNotes.map((note, index) => (
-                          <div
-                            key={`${file.id}-agent-note-${index}`}
-                            className="rounded-md border border-[var(--rd-border)] bg-[var(--rd-panel)] p-2"
-                          >
-                            <div className="text-[0.66rem] uppercase tracking-[0.12em] text-[var(--rd-faint)]">
-                              {note.source ?? "agent note"}
-                            </div>
-                            <p className="mt-1 text-xs leading-5 text-[var(--rd-muted)]">
-                              {note.body}
-                            </p>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <p className="mt-2 text-xs leading-5 text-[var(--rd-muted)]">
-                        {session.order.source === "agent"
-                          ? "No agent note for this file."
-                          : "Import an agent manifest to see review rationale here."}
-                      </p>
-                    )}
-                  </div>
-                </TabsContent>
-              </Tabs>
-            </>
-          ) : (
-            <div className="rounded-lg border border-[var(--rd-border)] bg-[var(--rd-panel)] p-4 text-sm text-[var(--rd-muted)]">
-              Select a file to inspect review state and notes.
-            </div>
-          )}
-
-          <Separator className="bg-[var(--rd-border)]" />
-
-          {session.order.warnings.length > 0 ? (
-            <div className="rounded-lg border border-[var(--rd-clay-border)] bg-[var(--rd-clay-soft)] p-3">
-              <div className="text-sm font-semibold text-[var(--rd-clay)]">
-                Import warnings
-              </div>
-              <div className="mt-2 space-y-1.5">
-                {session.order.warnings.slice(0, 5).map((warning, index) => (
-                  <div
-                    key={`${warning.path ?? "session"}-${index}`}
-                    className="text-xs leading-5 text-[var(--rd-muted)]"
-                  >
-                    {warning.path ? `${compactPath(warning.path, 42)}: ` : ""}
-                    {warning.message}
-                  </div>
-                ))}
-              </div>
-            </div>
-          ) : null}
-
-          <div>
-            <div className="flex items-center justify-between">
-              <div>
-                <div className="text-sm font-semibold text-[var(--rd-text)]">
-                  Review Basket
-                </div>
-                <div className="mt-1 text-xs text-[var(--rd-muted)]">
-                  Drafts staged for a future GitHub review
-                </div>
-              </div>
-              <Badge className="border-[var(--rd-border)] bg-[var(--rd-panel-2)] text-[var(--rd-text-soft)]">
-                {basket.length}
-              </Badge>
-            </div>
-
-            <div className="mt-3 space-y-2">
-              {basket.length > 0 ? (
-                basket.map((item) => (
-                  <div
-                    key={item.id}
-                    className="rounded-lg border border-[var(--rd-border)] bg-[var(--rd-bg)] p-3"
-                  >
-                    <div className="text-xs font-medium text-[var(--rd-text-soft)]">
-                      {compactPath(item.path, 46)}
-                    </div>
-                    <div className="mt-1 text-[0.66rem] uppercase tracking-[0.12em] text-[var(--rd-faint)]">
-                      {item.scope}
-                    </div>
-                    <p className="mt-2 line-clamp-3 text-xs leading-5 text-[var(--rd-muted)]">
-                      {item.body}
-                    </p>
-                  </div>
-                ))
-              ) : (
-                <div className="rounded-lg border border-dashed border-[var(--rd-border)] p-3 text-xs leading-5 text-[var(--rd-faint)]">
-                  Publishable comments will collect here.
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
+        {mode === "file" ? (
+          <FileMode {...props} />
+        ) : (
+          <LedgerMode session={session} ledger={ledger} onJumpToNote={props.onJumpToNote} />
+        )}
       </ScrollArea>
 
-      <div className="border-t border-[var(--rd-border)] p-3">
-        <Button
-          type="button"
-          className="w-full bg-[var(--rd-accent)] text-[var(--rd-ink)] hover:bg-[var(--rd-accent-strong)]"
-          disabled={basket.length === 0}
-        >
-          <Send className="size-4" />
-          Publish Review Later
-        </Button>
-      </div>
+      <BasketFooter basket={basket} />
     </aside>
   );
 }
 
-type ReviewBasketItem = {
-  id: string;
-  path: string;
-  scope: string;
-  body: string;
-};
+function InspectorHeader({
+  mode,
+  onModeChange,
+}: {
+  mode: "file" | "ledger";
+  onModeChange: (mode: "file" | "ledger") => void;
+}) {
+  return (
+    <div className="border-b border-[var(--rd-hair)] px-5 py-3">
+      <div className="rd-display-italic text-[13px] leading-none text-[var(--rd-cream-2)]">
+        Margin
+      </div>
+      <div className="mt-2 inline-flex rounded-md bg-[var(--rd-ink-2)] p-0.5">
+        <button
+          type="button"
+          onClick={() => onModeChange("file")}
+          aria-pressed={mode === "file"}
+          className={[
+            "h-6 rounded px-2 text-[11px]",
+            mode === "file"
+              ? "bg-[var(--rd-ink-4)] text-[var(--rd-cream)]"
+              : "text-[var(--rd-graphite)] hover:text-[var(--rd-cream)]",
+          ].join(" ")}
+        >
+          This file
+        </button>
+        <button
+          type="button"
+          onClick={() => onModeChange("ledger")}
+          aria-pressed={mode === "ledger"}
+          className={[
+            "h-6 rounded px-2 text-[11px]",
+            mode === "ledger"
+              ? "bg-[var(--rd-ink-4)] text-[var(--rd-cream)]"
+              : "text-[var(--rd-graphite)] hover:text-[var(--rd-cream)]",
+          ].join(" ")}
+        >
+          Ledger
+        </button>
+      </div>
+    </div>
+  );
+}
 
-function lineRangeLabel(
-  comment: Pick<InlineComment, "side" | "startLine" | "endLine">,
-) {
-  const side = comment.side === "old" ? "old" : "new";
-  if (!comment.startLine && !comment.endLine) {
-    return `${side} line`;
-  }
-  if (comment.startLine === comment.endLine || !comment.endLine) {
-    return `${side} line ${comment.startLine}`;
+function FileMode({
+  session,
+  file,
+  fileState,
+  onPatchFileState,
+  expandSectionHint,
+}: InspectorProps) {
+  const [openSections, setOpenSections] = useState<Record<SectionKey, boolean>>({
+    private: true,
+    draft: false,
+    agent: false,
+  });
+
+  useEffect(() => {
+    if (!expandSectionHint) {
+      return;
+    }
+    setOpenSections((current) => ({ ...current, [expandSectionHint.section]: true }));
+  }, [expandSectionHint]);
+
+  function toggle(key: SectionKey) {
+    setOpenSections((current) => ({ ...current, [key]: !current[key] }));
   }
 
-  return `${side} lines ${comment.startLine}-${comment.endLine}`;
+  return (
+    <div className="px-4 py-4">
+      {file ? (
+        <>
+          <div className="mt-5 space-y-3">
+            <AccordionSection
+              label="Private notes"
+              open={openSections.private}
+              onToggle={() => toggle("private")}
+              icon={<NotebookPen className="size-3.5 text-[var(--rd-graphite)]" />}
+            >
+              <Textarea
+                value={fileState?.privateNote ?? ""}
+                onChange={(event) =>
+                  onPatchFileState(file.id, { privateNote: event.currentTarget.value })
+                }
+                placeholder="Notes for me. These never publish."
+                className="min-h-32 resize-none border-0 bg-[var(--rd-ink-2)] text-[13px] text-[var(--rd-cream)] placeholder:text-[var(--rd-pencil)]"
+              />
+            </AccordionSection>
+
+            <AccordionSection
+              label="Public draft"
+              open={openSections.draft}
+              onToggle={() => toggle("draft")}
+              icon={<MessageSquare className="size-3.5 text-[var(--rd-vermillion-2)]" />}
+            >
+              <Textarea
+                value={fileState?.publishableDraft ?? ""}
+                onChange={(event) =>
+                  onPatchFileState(file.id, { publishableDraft: event.currentTarget.value })
+                }
+                placeholder="Draft a publishable review comment."
+                className="min-h-32 resize-none border-0 bg-[var(--rd-ink-2)] text-[13px] text-[var(--rd-cream)] placeholder:text-[var(--rd-pencil)]"
+              />
+            </AccordionSection>
+
+            <AccordionSection
+              label="Agent context"
+              open={openSections.agent}
+              onToggle={() => toggle("agent")}
+              icon={<Bot className="size-3.5 text-[var(--rd-vermillion-2)]" />}
+            >
+              <AgentContext session={session} file={file} />
+            </AccordionSection>
+          </div>
+        </>
+      ) : (
+        <div className="rounded-md border border-[var(--rd-hair)] bg-[var(--rd-ink-2)] p-4 rd-display-italic text-[13px] text-[var(--rd-graphite)]">
+          Select a file to inspect.
+        </div>
+      )}
+
+      {session.order.warnings.length > 0 ? (
+        <div className="mt-5 rounded-md border-l-[3px] border-[var(--rd-del)] bg-[var(--rd-del-bg)] px-3 py-2.5">
+          <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-[var(--rd-del)]">
+            Import warnings
+          </div>
+          <div className="mt-1.5 space-y-1">
+            {session.order.warnings.slice(0, 5).map((warning, index) => (
+              <div
+                key={`${warning.path ?? "session"}-${index}`}
+                className="text-[11px] leading-5 text-[var(--rd-cream-2)]"
+              >
+                {warning.path ? (
+                  <span className="font-mono">{compactPath(warning.path, 42)}: </span>
+                ) : null}
+                {warning.message}
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function LedgerMode({
+  session,
+  ledger,
+  onJumpToNote,
+}: {
+  session: ReviewSession;
+  ledger: LedgerEntry[];
+  onJumpToNote: InspectorProps["onJumpToNote"];
+}) {
+  const [filter, setFilter] = useState<LedgerFilter>("all");
+  const counts = countByKind(ledger);
+  const filtered = filterLedger(ledger, filter);
+  const groups = groupLedgerByFile(session, filtered);
+
+  return (
+    <div className="px-4 py-4">
+      <div className="flex items-center gap-1.5">
+        <FilterChip label={`All ${counts.total}`} active={filter === "all"} onClick={() => setFilter("all")} />
+        <FilterChip label={`Private ${counts.private}`} active={filter === "private"} onClick={() => setFilter("private")} />
+        <FilterChip label={`Review ${counts.review}`} active={filter === "review"} onClick={() => setFilter("review")} />
+      </div>
+
+      <div className="mt-3 space-y-4">
+        {groups.length === 0 ? (
+          <div className="rounded-md border border-[var(--rd-hair)] bg-[var(--rd-ink-2)] p-4 rd-display-italic text-[13px] text-[var(--rd-graphite)]">
+            No notes yet. Comment on a line or draft a review to populate the ledger.
+          </div>
+        ) : (
+          groups.map((group) => (
+            <div key={group.file.id}>
+              <div className="flex items-baseline justify-between border-b border-[var(--rd-hair)] pb-1">
+                <span className="truncate font-mono text-[11px] text-[var(--rd-cream)]">
+                  {compactPath(group.file.path, 38)}
+                </span>
+                <span className="font-mono text-[10px] tabular-nums text-[var(--rd-pencil)]">
+                  {group.entries.length}
+                </span>
+              </div>
+              <div className="mt-1.5 space-y-1.5">
+                {group.entries.map((entry) => (
+                  <LedgerCard
+                    key={entry.id}
+                    entry={entry}
+                    onJump={() => onJumpToNote(jumpTargetForEntry(entry))}
+                  />
+                ))}
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+function jumpTargetForEntry(entry: LedgerEntry) {
+  if (entry.kind === "private-file-note") {
+    return { fileId: entry.fileId, expandSection: "private" as const };
+  }
+  if (entry.kind === "public-file-draft") {
+    return { fileId: entry.fileId, expandSection: "draft" as const };
+  }
+  return { fileId: entry.fileId, diffPosition: entry.diffPosition };
+}
+
+function FilterChip({
+  label,
+  active,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={[
+        "h-6 rounded-full px-2.5 text-[10px] font-mono uppercase tracking-wider",
+        active
+          ? "bg-[var(--rd-vermillion-bg)] text-[var(--rd-vermillion-2)]"
+          : "text-[var(--rd-graphite)] hover:text-[var(--rd-cream)]",
+      ].join(" ")}
+    >
+      {label}
+    </button>
+  );
+}
+
+function LedgerCard({ entry, onJump }: { entry: LedgerEntry; onJump: () => void }) {
+  const isPrivate = entry.kind === "private-file-note" || entry.kind === "private-inline";
+  const Icon = isPrivate ? NotebookPen : MessageSquare;
+  const iconClass = isPrivate
+    ? "text-[var(--rd-graphite)]"
+    : "text-[var(--rd-vermillion-2)]";
+
+  return (
+    <button
+      type="button"
+      onClick={onJump}
+      className="block w-full rounded-sm px-2.5 py-2 text-left hover:bg-[var(--rd-ink-2)]"
+    >
+      <div className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--rd-pencil)]">
+        <Icon className={`size-3 ${iconClass}`} />
+        {isPrivate ? "Private" : "Review"}
+        <span className="normal-case tracking-normal text-[var(--rd-graphite)]">
+          · {ledgerLineRangeLabel(entry)}
+        </span>
+      </div>
+      <p className="mt-1 line-clamp-2 text-[12px] leading-5 text-[var(--rd-cream-2)]">
+        {entry.body}
+      </p>
+    </button>
+  );
+}
+
+function AccordionSection({
+  label,
+  open,
+  onToggle,
+  icon,
+  children,
+}: {
+  label: string;
+  open: boolean;
+  onToggle: () => void;
+  icon: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={onToggle}
+        className="flex w-full items-center justify-between py-2.5 text-left"
+        aria-expanded={open}
+      >
+        <span className="flex items-center gap-2">
+          {icon}
+          <span className="rd-display-italic text-[13px] text-[var(--rd-cream)]">{label}</span>
+        </span>
+        <ChevronDown
+          className={[
+            "size-3.5 text-[var(--rd-pencil)] transition-transform",
+            open ? "rotate-180" : "",
+          ].join(" ")}
+        />
+      </button>
+      {open ? <div className="pb-3">{children}</div> : null}
+    </div>
+  );
+}
+
+function AgentContext({ session, file }: { session: ReviewSession; file: ReviewFile }) {
+  if (session.order.source !== "agent" && !file.reviewReason && file.agentNotes.length === 0) {
+    return (
+      <div className="text-[12px] leading-5 text-[var(--rd-graphite)]">
+        Import an agent manifest to see review rationale here.
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2.5">
+      {file.reviewReason ? (
+        <blockquote className="border-l-[3px] border-[var(--rd-vermillion-line)] pl-3 rd-display-italic text-[13px] leading-snug text-[var(--rd-cream-2)]">
+          {file.reviewReason}
+        </blockquote>
+      ) : null}
+      {file.agentNotes.length > 0 ? (
+        <div className="space-y-1.5">
+          {file.agentNotes.map((note, index) => (
+            <div
+              key={`${file.id}-agent-note-${index}`}
+              className="rounded-md border border-[var(--rd-hair)] bg-[var(--rd-ink-2)] p-2.5"
+            >
+              <div className="font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--rd-pencil)]">
+                {note.source ?? "agent note"}
+              </div>
+              <p className="mt-1 text-[12px] leading-5 text-[var(--rd-cream-2)]">
+                {note.body}
+              </p>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function BasketFooter({ basket }: { basket: LedgerEntry[] }) {
+  return (
+    <div className="border-t border-[var(--rd-hair)]">
+      <div className="flex items-baseline justify-between px-5 pt-4">
+        <div className="rd-display-italic text-[13px] text-[var(--rd-cream)]">Basket</div>
+        <div className="font-mono text-[11px] tabular-nums text-[var(--rd-pencil)]">
+          {basket.length} {basket.length === 1 ? "item" : "items"}
+        </div>
+      </div>
+
+      <div className="max-h-44 overflow-y-auto px-3 pt-2">
+        {basket.length > 0 ? (
+          <div className="space-y-1">
+            {basket.map((entry) => (
+              <div
+                key={entry.id}
+                className="px-2 py-1.5"
+              >
+                <div className="truncate font-mono text-[10px] text-[var(--rd-cream-2)]">
+                  {compactPath(entry.filePath, 38)}
+                </div>
+                <div className="font-mono text-[9px] uppercase tracking-[0.14em] text-[var(--rd-pencil)]">
+                  {ledgerLineRangeLabel(entry)}
+                </div>
+                <p className="mt-0.5 line-clamp-2 text-[11px] leading-4 text-[var(--rd-graphite)]">
+                  {entry.body}
+                </p>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="rd-display-italic text-[12px] text-[var(--rd-pencil)]">
+            Publishable comments collect here.
+          </div>
+        )}
+      </div>
+
+      <div className="p-3 pt-2">
+        <Button
+          type="button"
+          className="h-8 w-full rounded-md bg-[var(--rd-cream)] text-[12px] font-medium text-[var(--rd-ink)] hover:bg-white disabled:bg-[var(--rd-ink-3)] disabled:text-[var(--rd-pencil)]"
+          disabled={basket.length === 0}
+        >
+          <Send className="size-3.5" />
+          Publish Review
+        </Button>
+      </div>
+    </div>
+  );
 }
