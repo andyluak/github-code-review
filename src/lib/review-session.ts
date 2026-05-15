@@ -59,6 +59,7 @@ export async function listReviewRefs(
 export function createDefaultFileState(): SessionFileState {
   return {
     status: "unseen",
+    lastPatchHash: undefined,
     privateNote: "",
     publishableDraft: "",
     inlineComments: [],
@@ -117,8 +118,11 @@ export function loadReviewHistory(): ReviewHistoryItem[] {
 }
 
 export function rememberReviewSession(session: ReviewSession): ReviewHistoryItem[] {
+  const existing = loadReviewHistory().find((item) => item.id === session.id);
+  const now = new Date().toISOString();
   const nextItem: ReviewHistoryItem = {
     id: session.id,
+    snapshotHash: session.snapshotHash,
     repoRoot: session.repo.root,
     requestedPath: session.repo.requestedPath,
     repoName: basename(session.repo.root),
@@ -129,10 +133,12 @@ export function rememberReviewSession(session: ReviewSession): ReviewHistoryItem
     createdBy: session.order.createdBy,
     baseRef: session.repo.baseRef,
     headRef: session.repo.headRef,
+    target: session.target,
     totalFiles: session.summary.includedFiles,
     additions: session.summary.additions,
     deletions: session.summary.deletions,
-    createdAt: new Date().toISOString(),
+    createdAt: existing?.createdAt ?? now,
+    lastRefreshedAt: now,
   };
   const nextHistory = [
     nextItem,
@@ -152,6 +158,65 @@ export function nextViewedStatus(
   }
 
   return current === "reviewed" ? "reviewed" : "viewed";
+}
+
+export function toggleViewedStatus(current: ViewedStatus | undefined): ViewedStatus {
+  switch (current) {
+    case "viewed":
+      return "unseen";
+    case "reviewed":
+    case "changedSinceReviewed":
+    case "changedSinceViewed":
+      return "viewed";
+    case "unseen":
+    default:
+      return "viewed";
+  }
+}
+
+export function toggleReviewedStatus(current: ViewedStatus | undefined): ViewedStatus {
+  switch (current) {
+    case "reviewed":
+      return "viewed";
+    case "unseen":
+    case "viewed":
+    case "changedSinceViewed":
+    case "changedSinceReviewed":
+    default:
+      return "reviewed";
+  }
+}
+
+export function reconcileWorkspaceState(
+  session: ReviewSession,
+  state: ReviewWorkspaceState,
+): ReviewWorkspaceState {
+  const next: ReviewWorkspaceState = { ...state };
+
+  for (const file of session.files) {
+    const previous = {
+      ...createDefaultFileState(),
+      ...next[file.id],
+    };
+    let status = previous.status;
+
+    if (
+      previous.lastPatchHash &&
+      previous.lastPatchHash !== file.patchHash &&
+      (status === "viewed" || status === "reviewed")
+    ) {
+      status =
+        status === "reviewed" ? "changedSinceReviewed" : "changedSinceViewed";
+    }
+
+    next[file.id] = {
+      ...previous,
+      status,
+      lastPatchHash: file.patchHash,
+    };
+  }
+
+  return next;
 }
 
 function storageKey(sessionId: string) {

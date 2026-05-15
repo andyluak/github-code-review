@@ -1,5 +1,16 @@
-import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import {
+  Fragment,
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent,
+  type ReactNode,
+} from "react";
+import {
+  Check,
   CheckCircle2,
   Columns2,
   Copy,
@@ -59,7 +70,20 @@ type CommentTarget = {
   endLine?: number | null;
 };
 
-export function DiffCanvas({
+type AnchoredDiffLine = {
+  line: DiffLine;
+  anchor: LineAnchor;
+};
+
+type SplitDisplayRow = {
+  key: string;
+  old?: AnchoredDiffLine;
+  new?: AnchoredDiffLine;
+};
+
+const EMPTY_INLINE_COMMENTS: InlineComment[] = [];
+
+export const DiffCanvas = memo(function DiffCanvas({
   file,
   fileState,
   jumpTarget,
@@ -71,15 +95,10 @@ export function DiffCanvas({
 }: DiffCanvasProps) {
   const [viewMode, setViewMode] = useDiffViewMode();
   const [draftTarget, setDraftTarget] = useState<CommentTarget | null>(null);
-  const [draftBody, setDraftBody] = useState("");
-  const [draftVisibility, setDraftVisibility] =
-    useState<InlineCommentVisibility>("review");
   const diffContainerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     setDraftTarget(null);
-    setDraftBody("");
-    setDraftVisibility("review");
   }, [file?.id]);
 
   useEffect(() => {
@@ -116,6 +135,57 @@ export function DiffCanvas({
     };
   }, [jumpTarget, file, onScrollHandled]);
 
+  const isOneSided = file
+    ? file.changeKind === "added" || file.changeKind === "deleted"
+    : false;
+  const effectiveMode: DiffViewMode = isOneSided ? "unified" : viewMode;
+  const inlineComments = fileState?.inlineComments ?? EMPTY_INLINE_COMMENTS;
+  const commentsByPosition = useMemo(
+    () => groupCommentsByPosition(inlineComments),
+    [inlineComments],
+  );
+  const splitRowsByHunk = useMemo(() => {
+    if (!file || effectiveMode !== "split" || isOneSided) {
+      return [];
+    }
+
+    return file.hunks.map((hunk, hunkIndex) =>
+      buildSplitRows(hunk.lines, file.changeKind, hunkIndex),
+    );
+  }, [effectiveMode, file, isOneSided]);
+
+  function openInlineComposer(anchor: LineAnchor, extendSelection: boolean) {
+    setDraftTarget((current) => {
+      if (extendSelection && current?.side === anchor.side) {
+        return extendTarget(current, anchor);
+      }
+      return targetFromAnchor(anchor);
+    });
+  }
+
+  const saveDraftComment = useCallback((draftBody: string, draftVisibility: InlineCommentVisibility) => {
+    const body = draftBody.trim();
+    if (!file || !draftTarget || !body) {
+      return;
+    }
+    const now = new Date().toISOString();
+    onSaveInlineComment(file.id, {
+      id: createCommentId(),
+      fileId: file.id,
+      path: file.path,
+      side: draftTarget.side,
+      startDiffPosition: draftTarget.startDiffPosition,
+      endDiffPosition: draftTarget.endDiffPosition,
+      startLine: draftTarget.startLine,
+      endLine: draftTarget.endLine,
+      body,
+      visibility: draftVisibility,
+      createdAt: now,
+      updatedAt: now,
+    });
+    setDraftTarget(null);
+  }, [draftTarget, file, onSaveInlineComment]);
+
   if (!file) {
     return (
       <section className="grid h-full place-items-center bg-[var(--rd-ink)]">
@@ -134,47 +204,8 @@ export function DiffCanvas({
 
   const status = fileState?.status ?? file.viewedStatus;
   const isReviewed = status === "reviewed";
-  const isViewed = status === "viewed" || isReviewed;
-  const isOneSided = file.changeKind === "added" || file.changeKind === "deleted";
-  const effectiveMode: DiffViewMode = isOneSided ? "unified" : viewMode;
-  const inlineComments = fileState?.inlineComments ?? [];
-  const currentFile = file;
-
-  function openInlineComposer(anchor: LineAnchor, extendSelection: boolean) {
-    setDraftTarget((current) => {
-      if (extendSelection && current?.side === anchor.side) {
-        return extendTarget(current, anchor);
-      }
-      setDraftBody("");
-      setDraftVisibility("review");
-      return targetFromAnchor(anchor);
-    });
-  }
-
-  function saveDraftComment() {
-    const body = draftBody.trim();
-    if (!draftTarget || !body) {
-      return;
-    }
-    const now = new Date().toISOString();
-    onSaveInlineComment(currentFile.id, {
-      id: createCommentId(),
-      fileId: currentFile.id,
-      path: currentFile.path,
-      side: draftTarget.side,
-      startDiffPosition: draftTarget.startDiffPosition,
-      endDiffPosition: draftTarget.endDiffPosition,
-      startLine: draftTarget.startLine,
-      endLine: draftTarget.endLine,
-      body,
-      visibility: draftVisibility,
-      createdAt: now,
-      updatedAt: now,
-    });
-    setDraftTarget(null);
-    setDraftBody("");
-    setDraftVisibility("review");
-  }
+  const viewedLabel = status === "viewed" ? "Unview" : "Mark Viewed";
+  const reviewedLabel = isReviewed ? "Undo Review" : "Mark Reviewed";
 
   return (
     <section className="flex h-full min-h-0 flex-col bg-[var(--rd-ink)]">
@@ -206,7 +237,7 @@ export function DiffCanvas({
             onClick={onMarkViewed}
           >
             <Eye className="size-3.5" />
-            {isViewed ? "Viewed" : "Mark Viewed"}
+            {viewedLabel}
           </Button>
           <Button
             type="button"
@@ -219,7 +250,7 @@ export function DiffCanvas({
             onClick={onMarkReviewed}
           >
             <CheckCircle2 className="size-3.5" />
-            {isReviewed ? "Reviewed" : "Mark Reviewed"}
+            {reviewedLabel}
           </Button>
         </div>
       </div>
@@ -236,54 +267,80 @@ export function DiffCanvas({
                   </span>
                   <span className="h-px flex-1 bg-[var(--rd-hair-2)]" aria-hidden />
                 </div>
-                {hunk.lines.map((line, lineIndex) => {
-                  const anchor = getLineAnchor(line, file.changeKind, hunkIndex, lineIndex);
-                  const lineComments = inlineComments.filter(
-                    (comment) => comment.endDiffPosition === anchor.diffPosition,
-                  );
+                {effectiveMode === "split" && !isOneSided
+                  ? (splitRowsByHunk[hunkIndex] ?? []).map((row) => {
+                      const positions = getSplitRowPositions(row);
+                      const lineComments = positions.flatMap(
+                        (position) => commentsByPosition.get(position) ?? [],
+                      );
 
-                  return (
-                    <Fragment key={`${hunk.header}-${lineIndex}-${anchor.diffPosition}`}>
-                      {effectiveMode === "split" && !isOneSided ? (
-                        <SplitRow
-                          line={line}
-                          anchor={anchor}
-                          selected={isTargetSelected(draftTarget, anchor.diffPosition)}
-                          onAddComment={openInlineComposer}
-                        />
-                      ) : (
-                        <UnifiedRow
-                          line={line}
-                          anchor={anchor}
-                          changeKind={file.changeKind}
-                          selected={isTargetSelected(draftTarget, anchor.diffPosition)}
-                          onAddComment={openInlineComposer}
-                        />
-                      )}
-                      {draftTarget?.endDiffPosition === anchor.diffPosition ? (
-                        <InlineCommentComposer
-                          target={draftTarget}
-                          body={draftBody}
-                          visibility={draftVisibility}
-                          onBodyChange={setDraftBody}
-                          onVisibilityChange={setDraftVisibility}
-                          onSave={saveDraftComment}
-                          onCancel={() => {
-                            setDraftTarget(null);
-                            setDraftBody("");
-                          }}
-                        />
-                      ) : null}
-                      {lineComments.map((comment) => (
-                        <InlineCommentCard
-                          key={comment.id}
-                          comment={comment}
-                          onDelete={() => onDeleteInlineComment(file.id, comment.id)}
-                        />
-                      ))}
-                    </Fragment>
-                  );
-                })}
+                      return (
+                        <Fragment key={`${hunk.header}-${row.key}`}>
+                          <SplitRow
+                            row={row}
+                            selected={positions.some((position) =>
+                              isTargetSelected(draftTarget, position),
+                            )}
+                            onAddComment={openInlineComposer}
+                          />
+                          {draftTarget &&
+                          positions.includes(draftTarget.endDiffPosition) ? (
+                            <InlineCommentComposer
+                              target={draftTarget}
+                              onSave={saveDraftComment}
+                              onCancel={() => {
+                                setDraftTarget(null);
+                              }}
+                            />
+                          ) : null}
+                          {lineComments.map((comment) => (
+                            <InlineCommentCard
+                              key={comment.id}
+                              comment={comment}
+                              onDelete={() => onDeleteInlineComment(file.id, comment.id)}
+                            />
+                          ))}
+                        </Fragment>
+                      );
+                    })
+                  : hunk.lines.map((line, lineIndex) => {
+                      const anchor = getLineAnchor(
+                        line,
+                        file.changeKind,
+                        hunkIndex,
+                        lineIndex,
+                      );
+                      const lineComments =
+                        commentsByPosition.get(anchor.diffPosition) ?? [];
+
+                      return (
+                        <Fragment key={`${hunk.header}-${lineIndex}-${anchor.diffPosition}`}>
+                          <UnifiedRow
+                            line={line}
+                            anchor={anchor}
+                            changeKind={file.changeKind}
+                            selected={isTargetSelected(draftTarget, anchor.diffPosition)}
+                            onAddComment={openInlineComposer}
+                          />
+                          {draftTarget?.endDiffPosition === anchor.diffPosition ? (
+                            <InlineCommentComposer
+                              target={draftTarget}
+                              onSave={saveDraftComment}
+                              onCancel={() => {
+                                setDraftTarget(null);
+                              }}
+                            />
+                          ) : null}
+                          {lineComments.map((comment) => (
+                            <InlineCommentCard
+                              key={comment.id}
+                              comment={comment}
+                              onDelete={() => onDeleteInlineComment(file.id, comment.id)}
+                            />
+                          ))}
+                        </Fragment>
+                      );
+                    })}
               </div>
             ))}
           </div>
@@ -291,6 +348,49 @@ export function DiffCanvas({
       </ScrollArea>
     </section>
   );
+}, areDiffCanvasPropsEqual);
+
+function areDiffCanvasPropsEqual(
+  previous: DiffCanvasProps,
+  next: DiffCanvasProps,
+) {
+  return (
+    previous.file === next.file &&
+    previous.jumpTarget === next.jumpTarget &&
+    effectiveFileStatus(previous) === effectiveFileStatus(next) &&
+    sameInlineComments(previous.fileState, next.fileState) &&
+    previous.onScrollHandled === next.onScrollHandled &&
+    previous.onMarkViewed === next.onMarkViewed &&
+    previous.onMarkReviewed === next.onMarkReviewed &&
+    previous.onSaveInlineComment === next.onSaveInlineComment &&
+    previous.onDeleteInlineComment === next.onDeleteInlineComment
+  );
+}
+
+function effectiveFileStatus(props: DiffCanvasProps) {
+  return props.fileState?.status ?? props.file?.viewedStatus ?? "unseen";
+}
+
+function sameInlineComments(
+  previous: SessionFileState | null,
+  next: SessionFileState | null,
+) {
+  const previousComments = previous?.inlineComments;
+  const nextComments = next?.inlineComments;
+  if (previousComments === nextComments) {
+    return true;
+  }
+  return (previousComments?.length ?? 0) === 0 && (nextComments?.length ?? 0) === 0;
+}
+
+function groupCommentsByPosition(inlineComments: InlineComment[]) {
+  const commentsByPosition = new Map<number, InlineComment[]>();
+  for (const comment of inlineComments) {
+    const comments = commentsByPosition.get(comment.endDiffPosition) ?? [];
+    comments.push(comment);
+    commentsByPosition.set(comment.endDiffPosition, comments);
+  }
+  return commentsByPosition;
 }
 
 function ViewModeToggle({
@@ -354,57 +454,58 @@ function ViewModeToggle({
   );
 }
 
-function SplitRow({
-  line,
-  anchor,
+const SplitRow = memo(function SplitRow({
+  row,
   selected,
   onAddComment,
 }: {
-  line: DiffLine;
-  anchor: LineAnchor;
+  row: SplitDisplayRow;
   selected: boolean;
   onAddComment: (anchor: LineAnchor, extendSelection: boolean) => void;
 }) {
-  const isAddition = line.kind === "addition";
-  const isDeletion = line.kind === "deletion";
-  const marker = isAddition ? "+" : isDeletion ? "−" : " ";
-
-  const oldAnchor: LineAnchor = { ...anchor, side: "old", lineNumber: line.oldLine };
-  const newAnchor: LineAnchor = { ...anchor, side: "new", lineNumber: line.newLine };
+  const oldHot = row.old?.line.kind === "deletion";
+  const newHot = row.new?.line.kind === "addition";
+  const anchor = row.old?.anchor ?? row.new?.anchor;
 
   return (
     <div
-      data-anchor={anchor.diffPosition}
+      data-anchor={anchor?.diffPosition}
       className={[
         "group grid min-h-6 grid-cols-[56px_minmax(0,1fr)_56px_minmax(0,1fr)] border-b border-[var(--rd-hair)] font-mono text-[12px] leading-6",
-        isAddition ? "bg-[var(--rd-add-bg)]" : "",
-        isDeletion ? "bg-[var(--rd-del-bg)]" : "",
         selected ? "outline outline-1 -outline-offset-1 outline-[var(--rd-vermillion-line)]" : "",
       ].join(" ")}
     >
-      <LineNumber value={line.oldLine} hot={isDeletion} tone="del" />
+      <LineNumber value={row.old?.line.oldLine} hot={oldHot} tone="del" />
       <CodeCell
-        muted={isAddition}
-        hot={isDeletion}
-        marker={marker}
-        onAddComment={isAddition ? undefined : (extend) => onAddComment(oldAnchor, extend)}
+        muted={!row.old}
+        hot={oldHot}
+        marker={row.old ? markerForLine(row.old.line) : ""}
+        tone={oldHot ? "del" : "neutral"}
+        counterpart={oldHot && row.new ? row.new.line.content : undefined}
+        onAddComment={
+          row.old ? (extend) => onAddComment(row.old!.anchor, extend) : undefined
+        }
       >
-        {isAddition ? "" : line.content}
+        {row.old?.line.content ?? ""}
       </CodeCell>
-      <LineNumber value={line.newLine} hot={isAddition} tone="add" />
+      <LineNumber value={row.new?.line.newLine} hot={newHot} tone="add" />
       <CodeCell
-        muted={isDeletion}
-        hot={isAddition}
-        marker={marker}
-        onAddComment={isDeletion ? undefined : (extend) => onAddComment(newAnchor, extend)}
+        muted={!row.new}
+        hot={newHot}
+        marker={row.new ? markerForLine(row.new.line) : ""}
+        tone={newHot ? "add" : "neutral"}
+        counterpart={newHot && row.old ? row.old.line.content : undefined}
+        onAddComment={
+          row.new ? (extend) => onAddComment(row.new!.anchor, extend) : undefined
+        }
       >
-        {isDeletion ? "" : line.content}
+        {row.new?.line.content ?? ""}
       </CodeCell>
     </div>
   );
-}
+});
 
-function UnifiedRow({
+const UnifiedRow = memo(function UnifiedRow({
   line,
   anchor,
   changeKind,
@@ -443,31 +544,28 @@ function UnifiedRow({
         muted={false}
         hot={isAddition || isDeletion}
         marker={marker}
+        tone={isAddition ? "add" : isDeletion ? "del" : "neutral"}
         onAddComment={(extend) => onAddComment(lineAnchor, extend)}
       >
         {line.content}
       </CodeCell>
     </div>
   );
-}
+});
 
 function InlineCommentComposer({
   target,
-  body,
-  visibility,
-  onBodyChange,
-  onVisibilityChange,
   onSave,
   onCancel,
 }: {
   target: CommentTarget;
-  body: string;
-  visibility: InlineCommentVisibility;
-  onBodyChange: (value: string) => void;
-  onVisibilityChange: (value: InlineCommentVisibility) => void;
-  onSave: () => void;
+  onSave: (body: string, visibility: InlineCommentVisibility) => void;
   onCancel: () => void;
 }) {
+  const [body, setBody] = useState("");
+  const [visibility, setVisibility] =
+    useState<InlineCommentVisibility>("review");
+
   return (
     <div className="border-l-[3px] border-[var(--rd-vermillion-line)] bg-[var(--rd-ink-3)] px-4 py-3">
       <div className="mb-2 flex items-center justify-between gap-3">
@@ -486,7 +584,7 @@ function InlineCommentComposer({
 
       <Textarea
         value={body}
-        onChange={(event) => onBodyChange(event.currentTarget.value)}
+        onChange={(event) => setBody(event.currentTarget.value)}
         autoFocus
         placeholder="Write a comment for this line."
         className="min-h-24 resize-y border-[var(--rd-hair)] bg-[var(--rd-ink-2)] text-[13px] text-[var(--rd-cream)] placeholder:text-[var(--rd-pencil)]"
@@ -498,13 +596,13 @@ function InlineCommentComposer({
             active={visibility === "private"}
             icon={<NotebookPen className="size-3.5" />}
             label="Private"
-            onClick={() => onVisibilityChange("private")}
+            onClick={() => setVisibility("private")}
           />
           <CommentModeButton
             active={visibility === "review"}
             icon={<MessageSquare className="size-3.5" />}
             label="Review"
-            onClick={() => onVisibilityChange("review")}
+            onClick={() => setVisibility("review")}
           />
         </div>
         <Button
@@ -512,7 +610,7 @@ function InlineCommentComposer({
           size="xs"
           className="h-7 rounded-md bg-[var(--rd-cream)] px-3 text-[11px] text-[var(--rd-ink)] hover:bg-white"
           disabled={!body.trim()}
-          onClick={onSave}
+          onClick={() => onSave(body, visibility)}
         >
           Add comment
         </Button>
@@ -521,7 +619,7 @@ function InlineCommentComposer({
   );
 }
 
-function InlineCommentCard({
+const InlineCommentCard = memo(function InlineCommentCard({
   comment,
   onDelete,
 }: {
@@ -560,9 +658,9 @@ function InlineCommentCard({
       </div>
     </div>
   );
-}
+});
 
-function CommentModeButton({
+const CommentModeButton = memo(function CommentModeButton({
   active,
   icon,
   label,
@@ -588,9 +686,9 @@ function CommentModeButton({
       {label}
     </button>
   );
-}
+});
 
-function LineNumber({
+const LineNumber = memo(function LineNumber({
   value,
   hot,
   tone,
@@ -611,27 +709,58 @@ function LineNumber({
       {value ?? ""}
     </div>
   );
-}
+});
 
-function CodeCell({
+const CodeCell = memo(function CodeCell({
   children,
   muted,
   hot,
   marker,
+  tone,
+  counterpart,
   onAddComment,
 }: {
   children: string;
   muted: boolean;
   hot: boolean;
   marker: string;
+  tone: "add" | "del" | "neutral";
+  counterpart?: string;
   onAddComment?: (extendSelection: boolean) => void;
 }) {
   const canComment = Boolean(children && onAddComment);
+  const canCopy = children.length > 0;
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+  const codeContent = useMemo(
+    () => (children ? renderCodeContent(children, counterpart, tone) : null),
+    [children, counterpart, tone],
+  );
+
+  useEffect(() => {
+    if (copyState === "idle") {
+      return;
+    }
+    const timer = window.setTimeout(() => setCopyState("idle"), 900);
+    return () => window.clearTimeout(timer);
+  }, [copyState]);
+
+  async function copyLine(event: MouseEvent<HTMLButtonElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+    try {
+      await navigator.clipboard.writeText(children);
+      setCopyState("copied");
+    } catch {
+      setCopyState("failed");
+    }
+  }
 
   return (
     <div
       className={[
-        "relative grid min-w-0 grid-cols-[28px_minmax(0,1fr)]",
+        "group/cell relative grid min-w-0 grid-cols-[28px_minmax(0,1fr)]",
+        tone === "add" ? "bg-[var(--rd-add-bg)]" : "",
+        tone === "del" ? "bg-[var(--rd-del-bg)]" : "",
         muted ? "text-[var(--rd-pencil)]" : "text-[var(--rd-cream-2)]",
         hot ? "text-[var(--rd-cream)]" : "",
       ].join(" ")}
@@ -664,14 +793,200 @@ function CodeCell({
           {children ? (marker.trim() ? marker : "+") : ""}
         </span>
       </button>
-      <div className="min-w-0 whitespace-pre-wrap break-words px-3">
-        {children ? highlightCodeLine(children) : null}
+      <div
+        className={[
+          "min-w-0 whitespace-pre-wrap break-words px-3 pr-8 transition-colors duration-150",
+          copyState === "copied" ? "bg-[var(--rd-vermillion-bg)]" : "",
+        ].join(" ")}
+      >
+        {codeContent}
       </div>
-      {hot ? (
-        <Copy className="absolute right-2 top-1.5 size-3 text-[var(--rd-pencil)] opacity-0 group-hover:opacity-100" />
+      {canCopy ? (
+        <button
+          type="button"
+          className={[
+            "absolute right-1.5 top-1 grid size-4 place-items-center rounded text-[var(--rd-pencil)] opacity-0 transition hover:bg-[var(--rd-ink-4)] hover:text-[var(--rd-cream)] focus-visible:opacity-100 focus-visible:outline-none group-hover/cell:opacity-100",
+            copyState === "copied" ? "opacity-100 text-[var(--rd-add)]" : "",
+            copyState === "failed" ? "opacity-100 text-[var(--rd-del)]" : "",
+          ].join(" ")}
+          onClick={copyLine}
+          aria-label="Copy raw line"
+          title={copyState === "failed" ? "Copy failed" : "Copy raw line"}
+        >
+          {copyState === "copied" ? (
+            <Check className="size-3" />
+          ) : (
+            <Copy className="size-3" />
+          )}
+        </button>
+      ) : null}
+      {copyState === "failed" ? (
+        <div className="absolute right-6 top-0.5 rounded bg-[var(--rd-del-bg)] px-1.5 text-[10px] leading-5 text-[var(--rd-del)]">
+          Copy failed
+        </div>
       ) : null}
     </div>
   );
+});
+
+function buildSplitRows(
+  lines: DiffLine[],
+  changeKind: ReviewFile["changeKind"],
+  hunkIndex: number,
+) {
+  const rows: SplitDisplayRow[] = [];
+  let index = 0;
+
+  while (index < lines.length) {
+    const line = lines[index];
+
+    if (line.kind === "context") {
+      rows.push({
+        key: `context-${hunkIndex}-${index}`,
+        old: anchorLine(line, "old", changeKind, hunkIndex, index),
+        new: anchorLine(line, "new", changeKind, hunkIndex, index),
+      });
+      index += 1;
+      continue;
+    }
+
+    if (line.kind === "deletion") {
+      const deletions: Array<{ line: DiffLine; index: number }> = [];
+      while (lines[index]?.kind === "deletion") {
+        deletions.push({ line: lines[index], index });
+        index += 1;
+      }
+
+      const additions: Array<{ line: DiffLine; index: number }> = [];
+      while (lines[index]?.kind === "addition") {
+        additions.push({ line: lines[index], index });
+        index += 1;
+      }
+
+      const count = Math.max(deletions.length, additions.length);
+      for (let offset = 0; offset < count; offset += 1) {
+        const oldLine = deletions[offset];
+        const newLine = additions[offset];
+        rows.push({
+          key: `replace-${hunkIndex}-${oldLine?.index ?? "pad"}-${
+            newLine?.index ?? "pad"
+          }`,
+          old: oldLine
+            ? anchorLine(oldLine.line, "old", changeKind, hunkIndex, oldLine.index)
+            : undefined,
+          new: newLine
+            ? anchorLine(newLine.line, "new", changeKind, hunkIndex, newLine.index)
+            : undefined,
+        });
+      }
+      continue;
+    }
+
+    const additions: Array<{ line: DiffLine; index: number }> = [];
+    while (lines[index]?.kind === "addition") {
+      additions.push({ line: lines[index], index });
+      index += 1;
+    }
+    for (const addedLine of additions) {
+      rows.push({
+        key: `addition-${hunkIndex}-${addedLine.index}`,
+        new: anchorLine(addedLine.line, "new", changeKind, hunkIndex, addedLine.index),
+      });
+    }
+  }
+
+  return rows;
+}
+
+function anchorLine(
+  line: DiffLine,
+  side: InlineCommentSide,
+  changeKind: ReviewFile["changeKind"],
+  hunkIndex: number,
+  lineIndex: number,
+): AnchoredDiffLine {
+  const anchor = getLineAnchor(line, changeKind, hunkIndex, lineIndex);
+  return {
+    line,
+    anchor: {
+      ...anchor,
+      side,
+      lineNumber: side === "old" ? line.oldLine : line.newLine,
+    },
+  };
+}
+
+function getSplitRowPositions(row: SplitDisplayRow) {
+  return [row.old?.anchor.diffPosition, row.new?.anchor.diffPosition].filter(
+    (position): position is number => typeof position === "number",
+  );
+}
+
+function markerForLine(line: DiffLine) {
+  if (line.kind === "addition") {
+    return "+";
+  }
+  if (line.kind === "deletion") {
+    return "−";
+  }
+  return " ";
+}
+
+function renderCodeContent(
+  content: string,
+  counterpart: string | undefined,
+  tone: "add" | "del" | "neutral",
+) {
+  if (!counterpart || content === counterpart || tone === "neutral") {
+    return highlightCodeLine(content);
+  }
+
+  return inlineSegments(content, counterpart).map((segment, index) => {
+    if (!segment.changed) {
+      return <Fragment key={`${index}-same`}>{highlightCodeLine(segment.text)}</Fragment>;
+    }
+
+    return (
+      <span
+        key={`${index}-changed`}
+        className={[
+          "rounded-sm px-[1px]",
+          tone === "add"
+            ? "bg-[var(--rd-add-line)] text-[var(--rd-cream)]"
+            : "bg-[var(--rd-del-line)] text-[var(--rd-cream)]",
+        ].join(" ")}
+      >
+        {highlightCodeLine(segment.text)}
+      </span>
+    );
+  });
+}
+
+function inlineSegments(content: string, counterpart: string) {
+  let prefix = 0;
+  while (
+    prefix < content.length &&
+    prefix < counterpart.length &&
+    content[prefix] === counterpart[prefix]
+  ) {
+    prefix += 1;
+  }
+
+  let suffix = 0;
+  while (
+    suffix < content.length - prefix &&
+    suffix < counterpart.length - prefix &&
+    content[content.length - suffix - 1] === counterpart[counterpart.length - suffix - 1]
+  ) {
+    suffix += 1;
+  }
+
+  const end = content.length - suffix;
+  return [
+    { text: content.slice(0, prefix), changed: false },
+    { text: content.slice(prefix, end), changed: true },
+    { text: content.slice(end), changed: false },
+  ].filter((segment) => segment.text.length > 0);
 }
 
 function getLineAnchor(

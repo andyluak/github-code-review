@@ -23,7 +23,7 @@ It also writes:
 .review-desk/active-session.json
 ```
 
-The desktop app watches this active pointer.
+The desktop app checks this pointer and can load that manifest for the open repo.
 
 ## CLI
 

@@ -1,7 +1,11 @@
+import { memo, useMemo, useState, type ReactNode } from "react";
 import {
   Bot,
   ChevronDown,
   FolderOpen,
+  GitBranch,
+  GitCommitHorizontal,
+  GitCompare,
   History,
   Loader2,
   Play,
@@ -20,20 +24,28 @@ import { Input } from "@/components/ui/input";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { compactPath } from "@/lib/format";
 import type {
+  GitCommit,
   GitRef,
   GitRefKind,
+  PullRequestSummary,
   RecentRepo,
   RepoRefs,
   ReviewHistoryItem,
   ReviewSession,
+  ReviewTargetKind,
   ReviewWorkspaceState,
-  ViewedStatus,
 } from "@/types/review";
 
 type CommandBarProps = {
   repoPath: string;
   baseRef: string;
   headRef: string;
+  targetKind: ReviewTargetKind;
+  commitRef: string;
+  rangeFromRef: string;
+  rangeToRef: string;
+  pullRequestNumber: number | null;
+  pullRequestInput: string;
   repoRefs: RepoRefs | null;
   recentRepos: RecentRepo[];
   reviewHistory: ReviewHistoryItem[];
@@ -46,6 +58,13 @@ type CommandBarProps = {
   onRepoPathChange: (value: string) => void;
   onBaseRefChange: (value: string) => void;
   onHeadRefChange: (value: string) => void;
+  onTargetKindChange: (value: ReviewTargetKind) => void;
+  onCommitRefChange: (value: string) => void;
+  onRangeFromRefChange: (value: string) => void;
+  onRangeToRefChange: (value: string) => void;
+  onPullRequestNumberChange: (value: number | null) => void;
+  onPullRequestInputChange: (value: string) => void;
+  onPullRequestInputSubmit: () => void;
   onPickRepo: () => void;
   onSelectRecentRepo: (path: string) => void;
   onSelectReviewHistory: (item: ReviewHistoryItem) => void;
@@ -58,6 +77,12 @@ export function CommandBar({
   repoPath,
   baseRef,
   headRef,
+  targetKind,
+  commitRef,
+  rangeFromRef,
+  rangeToRef,
+  pullRequestNumber,
+  pullRequestInput,
   repoRefs,
   recentRepos,
   reviewHistory,
@@ -70,6 +95,13 @@ export function CommandBar({
   onRepoPathChange,
   onBaseRefChange,
   onHeadRefChange,
+  onTargetKindChange,
+  onCommitRefChange,
+  onRangeFromRefChange,
+  onRangeToRefChange,
+  onPullRequestNumberChange,
+  onPullRequestInputChange,
+  onPullRequestInputSubmit,
   onPickRepo,
   onSelectRecentRepo,
   onSelectReviewHistory,
@@ -139,22 +171,31 @@ export function CommandBar({
           <TooltipContent>Refresh Git refs</TooltipContent>
         </Tooltip>
 
-        <div className="hidden items-center gap-1.5 xl:flex">
-          <RefPicker
-            label="base"
-            value={baseRef}
-            refs={repoRefs?.refs ?? []}
+        <div className="hidden min-w-0 items-center gap-1.5 xl:flex">
+          <TargetModePicker
+            value={targetKind}
             disabled={!repoRefs || isRefsLoading}
-            emptyLabel="Working tree"
-            onChange={onBaseRefChange}
+            onChange={onTargetKindChange}
           />
-          <RefPicker
-            label="head"
-            value={headRef}
-            refs={repoRefs?.refs ?? []}
+          <TargetControls
+            kind={targetKind}
+            baseRef={baseRef}
+            headRef={headRef}
+            commitRef={commitRef}
+            rangeFromRef={rangeFromRef}
+            rangeToRef={rangeToRef}
+            pullRequestNumber={pullRequestNumber}
+            pullRequestInput={pullRequestInput}
+            repoRefs={repoRefs}
             disabled={!repoRefs || isRefsLoading}
-            emptyLabel="Working tree"
-            onChange={onHeadRefChange}
+            onBaseRefChange={onBaseRefChange}
+            onHeadRefChange={onHeadRefChange}
+            onCommitRefChange={onCommitRefChange}
+            onRangeFromRefChange={onRangeFromRefChange}
+            onRangeToRefChange={onRangeToRefChange}
+            onPullRequestNumberChange={onPullRequestNumberChange}
+            onPullRequestInputChange={onPullRequestInputChange}
+            onPullRequestInputSubmit={onPullRequestInputSubmit}
           />
         </div>
       </div>
@@ -219,14 +260,7 @@ export function CommandBar({
   );
 }
 
-function effectiveStatus(status: ViewedStatus): ViewedStatus {
-  if (status === "changedSinceReviewed" || status === "changedSinceViewed") {
-    return "unseen";
-  }
-  return status;
-}
-
-function SessionProgressBeacon({
+const SessionProgressBeacon = memo(function SessionProgressBeacon({
   session,
   workspaceState,
 }: {
@@ -257,6 +291,7 @@ function SessionProgressBeacon({
       viewed += 1;
     }
   }
+  const unseen = Math.max(total - reviewed - viewed - stale, 0);
 
   return (
     <div className="flex items-center gap-3">
@@ -264,25 +299,245 @@ function SessionProgressBeacon({
         {reviewed} <span className="text-[var(--rd-pencil)]">/</span> {total}
       </span>
       <div
-        className="flex h-1.5 w-[260px] gap-[2px] overflow-hidden"
+        className="flex h-1.5 w-[260px] overflow-hidden bg-[var(--rd-ink-4)]"
         aria-label={`${reviewed} of ${total} files reviewed`}
       >
-        {session.files.map((file, index) => {
-          const status = effectiveStatus(
-            workspaceState[file.id]?.status ?? file.viewedStatus,
-          );
-          const tint =
-            status === "reviewed"
-              ? "bg-[var(--rd-vermillion)]"
-              : status === "viewed"
-                ? "bg-[var(--rd-cream-2)]"
-                : "bg-[var(--rd-ink-4)]";
-          return <span key={`${file.id}-${index}`} className={`flex-1 ${tint}`} />;
-        })}
+        <ProgressSegment
+          count={reviewed}
+          total={total}
+          className="bg-[var(--rd-vermillion)]"
+        />
+        <ProgressSegment
+          count={viewed}
+          total={total}
+          className="bg-[var(--rd-cream-2)]"
+        />
+        <ProgressSegment
+          count={stale}
+          total={total}
+          className="bg-[var(--rd-del)]"
+        />
+        <ProgressSegment
+          count={unseen}
+          total={total}
+          className="bg-[var(--rd-ink-4)]"
+        />
       </div>
       <span className="font-mono text-[11px] text-[var(--rd-pencil)]">
         {viewed} viewed{stale > 0 ? ` · ${stale} stale` : ""}
       </span>
+    </div>
+  );
+});
+
+function ProgressSegment({
+  count,
+  total,
+  className,
+}: {
+  count: number;
+  total: number;
+  className: string;
+}) {
+  if (count <= 0 || total <= 0) {
+    return null;
+  }
+  return (
+    <span
+      className={className}
+      style={{ width: `${(count / total) * 100}%` }}
+    />
+  );
+}
+
+function TargetModePicker({
+  value,
+  disabled,
+  onChange,
+}: {
+  value: ReviewTargetKind;
+  disabled: boolean;
+  onChange: (value: ReviewTargetKind) => void;
+}) {
+  const selected = TARGET_MODES.find((mode) => mode.value === value) ?? TARGET_MODES[0];
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="h-7 w-36 justify-between rounded-md bg-[var(--rd-ink-2)] px-2.5 text-[12px] text-[var(--rd-cream)] hover:bg-[var(--rd-ink-3)]"
+          disabled={disabled}
+        >
+          <span className="flex min-w-0 items-center gap-1.5">
+            {selected.icon}
+            <span className="truncate font-mono text-[11px]">{selected.label}</span>
+          </span>
+          <ChevronDown className="size-3 shrink-0 text-[var(--rd-pencil)]" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="start"
+        className="w-52 border border-[var(--rd-hair-2)] bg-[var(--rd-ink-2)] text-[var(--rd-cream)]"
+      >
+        <DropdownMenuLabel className="rd-display-italic text-[12px] text-[var(--rd-cream-2)]">
+          Review target
+        </DropdownMenuLabel>
+        {TARGET_MODES.map((mode) => (
+          <DropdownMenuItem
+            key={mode.value}
+            className="justify-between px-2 py-1.5"
+            onSelect={() => onChange(mode.value)}
+          >
+            <span className="flex min-w-0 items-center gap-2">
+              {mode.icon}
+              <span className="text-[12px] text-[var(--rd-cream)]">{mode.label}</span>
+            </span>
+            <span className="font-mono text-[10px] text-[var(--rd-pencil)]">
+              {value === mode.value ? "✓" : ""}
+            </span>
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+function TargetControls({
+  kind,
+  baseRef,
+  headRef,
+  commitRef,
+  rangeFromRef,
+  rangeToRef,
+  pullRequestNumber,
+  pullRequestInput,
+  repoRefs,
+  disabled,
+  onBaseRefChange,
+  onHeadRefChange,
+  onCommitRefChange,
+  onRangeFromRefChange,
+  onRangeToRefChange,
+  onPullRequestNumberChange,
+  onPullRequestInputChange,
+  onPullRequestInputSubmit,
+}: {
+  kind: ReviewTargetKind;
+  baseRef: string;
+  headRef: string;
+  commitRef: string;
+  rangeFromRef: string;
+  rangeToRef: string;
+  pullRequestNumber: number | null;
+  pullRequestInput: string;
+  repoRefs: RepoRefs | null;
+  disabled: boolean;
+  onBaseRefChange: (value: string) => void;
+  onHeadRefChange: (value: string) => void;
+  onCommitRefChange: (value: string) => void;
+  onRangeFromRefChange: (value: string) => void;
+  onRangeToRefChange: (value: string) => void;
+  onPullRequestNumberChange: (value: number | null) => void;
+  onPullRequestInputChange: (value: string) => void;
+  onPullRequestInputSubmit: () => void;
+}) {
+  if (kind === "workingTree") {
+    return (
+      <div className="h-7 rounded-md bg-[var(--rd-ink-2)] px-2.5 font-mono text-[11px] leading-7 text-[var(--rd-pencil)]">
+        uncommitted changes
+      </div>
+    );
+  }
+
+  if (kind === "branch") {
+    return (
+      <>
+        <RefPicker
+          label="base"
+          value={baseRef}
+          refs={repoRefs?.refs ?? []}
+          disabled={disabled}
+          emptyLabel="Choose base"
+          onChange={onBaseRefChange}
+        />
+        <RefPicker
+          label="head"
+          value={headRef}
+          refs={repoRefs?.refs ?? []}
+          disabled={disabled}
+          emptyLabel="Choose head"
+          onChange={onHeadRefChange}
+        />
+      </>
+    );
+  }
+
+  if (kind === "commit") {
+    return (
+      <CommitPicker
+        label="commit"
+        value={commitRef}
+        commits={repoRefs?.commits ?? []}
+        disabled={disabled}
+        onChange={onCommitRefChange}
+      />
+    );
+  }
+
+  if (kind === "commitRange") {
+    return (
+      <>
+        <CommitPicker
+          label="from"
+          value={rangeFromRef}
+          commits={repoRefs?.commits ?? []}
+          disabled={disabled}
+          onChange={onRangeFromRefChange}
+        />
+        <CommitPicker
+          label="to"
+          value={rangeToRef}
+          commits={repoRefs?.commits ?? []}
+          disabled={disabled}
+          onChange={onRangeToRefChange}
+        />
+      </>
+    );
+  }
+
+  return (
+    <div className="flex min-w-0 items-center gap-1.5">
+      <PullRequestPicker
+        value={pullRequestNumber}
+        pullRequests={repoRefs?.pullRequests ?? []}
+        error={repoRefs?.pullRequestError ?? null}
+        disabled={disabled}
+        onChange={(pullRequest) => {
+          onPullRequestNumberChange(pullRequest?.number ?? null);
+          if (pullRequest) {
+            onPullRequestInputChange("");
+          }
+        }}
+      />
+      <Input
+        value={pullRequestInput}
+        onChange={(event) => {
+          onPullRequestInputChange(event.currentTarget.value);
+          onPullRequestNumberChange(null);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            onPullRequestInputSubmit();
+          }
+        }}
+        onBlur={onPullRequestInputSubmit}
+        placeholder="PR URL or #"
+        disabled={disabled}
+        className="h-7 w-28 rounded-md border-0 bg-[var(--rd-ink-2)] px-2 font-mono text-[11px] text-[var(--rd-cream)] placeholder:text-[var(--rd-pencil)]"
+      />
     </div>
   );
 }
@@ -350,9 +605,12 @@ function RefPicker({
   emptyLabel: string;
   onChange: (value: string) => void;
 }) {
+  const [query, setQuery] = useState("");
   const selected = refs.find((gitRef) => gitRef.name === value);
   const localRefs = refs.filter((gitRef) => gitRef.kind === "local");
   const remoteRefs = refs.filter((gitRef) => gitRef.kind === "remote");
+  const filteredLocalRefs = filterRefs(localRefs, query);
+  const filteredRemoteRefs = filterRefs(remoteRefs, query);
 
   return (
     <DropdownMenu>
@@ -382,8 +640,27 @@ function RefPicker({
         <DropdownMenuItem onSelect={() => onChange("")}>
           <span className="text-[11px] text-[var(--rd-graphite)]">{emptyLabel}</span>
         </DropdownMenuItem>
-        <RefGroup title="Local branches" refs={localRefs} value={value} onChange={onChange} />
-        <RefGroup title="Remote branches" refs={remoteRefs} value={value} onChange={onChange} />
+        <div className="px-2 py-1.5">
+          <Input
+            value={query}
+            onChange={(event) => setQuery(event.currentTarget.value)}
+            onKeyDown={(event) => event.stopPropagation()}
+            placeholder="Search branches"
+            className="h-7 border-0 bg-[var(--rd-ink)] font-mono text-[11px] text-[var(--rd-cream)] placeholder:text-[var(--rd-pencil)]"
+          />
+        </div>
+        <RefGroup
+          title="Local branches"
+          refs={filteredLocalRefs}
+          value={value}
+          onChange={onChange}
+        />
+        <RefGroup
+          title="Remote branches"
+          refs={filteredRemoteRefs}
+          value={value}
+          onChange={onChange}
+        />
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -452,6 +729,179 @@ function RefItem({
   );
 }
 
+function CommitPicker({
+  label,
+  value,
+  commits,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  commits: GitCommit[];
+  disabled: boolean;
+  onChange: (value: string) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const selected =
+    commits.find((commit) => commit.sha === value || commit.shortSha === value) ?? null;
+  const filteredCommits = useMemo(() => filterCommits(commits, query), [commits, query]);
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="h-7 w-44 justify-between rounded-md bg-[var(--rd-ink-2)] px-2.5 text-[12px] text-[var(--rd-cream)] hover:bg-[var(--rd-ink-3)]"
+          disabled={disabled}
+        >
+          <span className="flex min-w-0 items-baseline gap-2">
+            <span className="shrink-0 font-mono text-[10px] uppercase tracking-[0.18em] text-[var(--rd-pencil)]">
+              {label}
+            </span>
+            <span className="truncate font-mono text-[11px] text-[var(--rd-cream)]">
+              {selected?.shortSha ?? value}
+            </span>
+          </span>
+          <ChevronDown className="size-3 shrink-0 text-[var(--rd-pencil)]" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="end"
+        className="max-h-[460px] w-96 border border-[var(--rd-hair-2)] bg-[var(--rd-ink-2)] text-[var(--rd-cream)]"
+      >
+        <DropdownMenuLabel className="rd-display-italic text-[12px] text-[var(--rd-cream-2)]">
+          Latest commits
+        </DropdownMenuLabel>
+        <div className="px-2 py-1.5">
+          <Input
+            value={query}
+            onChange={(event) => setQuery(event.currentTarget.value)}
+            onKeyDown={(event) => event.stopPropagation()}
+            placeholder="Search commits"
+            className="h-7 border-0 bg-[var(--rd-ink)] font-mono text-[11px] text-[var(--rd-cream)] placeholder:text-[var(--rd-pencil)]"
+          />
+        </div>
+        <DropdownMenuItem onSelect={() => onChange("HEAD")}>
+          <span className="font-mono text-[11px] text-[var(--rd-cream)]">HEAD</span>
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        {filteredCommits.map((commit) => (
+          <DropdownMenuItem
+            key={commit.sha}
+            className="grid grid-cols-[auto_minmax(0,1fr)_auto] gap-3 px-2 py-1.5"
+            onSelect={() => onChange(commit.sha)}
+          >
+            <span className="font-mono text-[10px] text-[var(--rd-pencil)]">
+              {commit.shortSha}
+            </span>
+            <span className="min-w-0">
+              <span className="block truncate text-[12px] text-[var(--rd-cream)]">
+                {commit.title}
+              </span>
+              <span className="block truncate text-[10px] text-[var(--rd-graphite)]">
+                {commit.author} · {commit.date}
+                {commit.refs ? ` · ${commit.refs}` : ""}
+              </span>
+            </span>
+            <span className="font-mono text-[10px] text-[var(--rd-pencil)]">
+              {commit.sha === value ? "✓" : ""}
+            </span>
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+function PullRequestPicker({
+  value,
+  pullRequests,
+  error,
+  disabled,
+  onChange,
+}: {
+  value: number | null;
+  pullRequests: PullRequestSummary[];
+  error?: string | null;
+  disabled: boolean;
+  onChange: (pullRequest: PullRequestSummary | null) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const selected =
+    pullRequests.find((pullRequest) => pullRequest.number === value) ?? null;
+  const filteredPullRequests = useMemo(
+    () => filterPullRequests(pullRequests, query),
+    [pullRequests, query],
+  );
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="h-7 w-44 justify-between rounded-md bg-[var(--rd-ink-2)] px-2.5 text-[12px] text-[var(--rd-cream)] hover:bg-[var(--rd-ink-3)]"
+          disabled={disabled}
+        >
+          <span className="min-w-0 truncate font-mono text-[11px]">
+            {selected ? `#${selected.number} ${selected.title}` : "Open PRs"}
+          </span>
+          <ChevronDown className="size-3 shrink-0 text-[var(--rd-pencil)]" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="end"
+        className="max-h-[460px] w-96 border border-[var(--rd-hair-2)] bg-[var(--rd-ink-2)] text-[var(--rd-cream)]"
+      >
+        <DropdownMenuLabel className="rd-display-italic text-[12px] text-[var(--rd-cream-2)]">
+          Open pull requests
+        </DropdownMenuLabel>
+        <div className="px-2 py-1.5">
+          <Input
+            value={query}
+            onChange={(event) => setQuery(event.currentTarget.value)}
+            onKeyDown={(event) => event.stopPropagation()}
+            placeholder="Search PRs"
+            className="h-7 border-0 bg-[var(--rd-ink)] font-mono text-[11px] text-[var(--rd-cream)] placeholder:text-[var(--rd-pencil)]"
+          />
+        </div>
+        {filteredPullRequests.length > 0 ? (
+          filteredPullRequests.map((pullRequest) => (
+            <DropdownMenuItem
+              key={pullRequest.number}
+              className="grid grid-cols-[auto_minmax(0,1fr)_auto] gap-3 px-2 py-1.5"
+              onSelect={() => onChange(pullRequest)}
+            >
+              <span className="font-mono text-[10px] text-[var(--rd-pencil)]">
+                #{pullRequest.number}
+              </span>
+              <span className="min-w-0">
+                <span className="block truncate text-[12px] text-[var(--rd-cream)]">
+                  {pullRequest.title}
+                </span>
+                <span className="block truncate text-[10px] text-[var(--rd-graphite)]">
+                  {pullRequest.baseRefName} ← {pullRequest.headRefName}
+                </span>
+              </span>
+              <span className="font-mono text-[10px] text-[var(--rd-pencil)]">
+                {pullRequest.number === value ? "✓" : ""}
+              </span>
+            </DropdownMenuItem>
+          ))
+        ) : (
+          <div className="px-2 py-3 text-[11px] leading-5 text-[var(--rd-pencil)]">
+            {error ? `gh: ${error}` : "No open PRs returned. Paste a URL or number."}
+          </div>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
 function ReviewHistoryMenu({
   history,
   onSelectReview,
@@ -509,6 +959,9 @@ function refKindLabel(kind: GitRefKind) {
 }
 
 function reviewTargetLabel(item: ReviewHistoryItem) {
+  if (item.target?.label) {
+    return item.target.label;
+  }
   if (item.baseRef && item.headRef) {
     return `${item.baseRef}...${item.headRef}`;
   }
@@ -530,3 +983,76 @@ function formatReviewTime(value: string) {
     minute: "2-digit",
   }).format(date);
 }
+
+function filterRefs(refs: GitRef[], query: string) {
+  const needle = query.trim().toLowerCase();
+  if (!needle) {
+    return refs;
+  }
+  return refs.filter(
+    (gitRef) =>
+      gitRef.name.toLowerCase().includes(needle) ||
+      gitRef.shortSha.toLowerCase().includes(needle),
+  );
+}
+
+function filterCommits(commits: GitCommit[], query: string) {
+  const needle = query.trim().toLowerCase();
+  if (!needle) {
+    return commits;
+  }
+  return commits.filter(
+    (commit) =>
+      commit.sha.toLowerCase().includes(needle) ||
+      commit.shortSha.toLowerCase().includes(needle) ||
+      commit.title.toLowerCase().includes(needle) ||
+      commit.author.toLowerCase().includes(needle) ||
+      commit.refs.toLowerCase().includes(needle),
+  );
+}
+
+function filterPullRequests(pullRequests: PullRequestSummary[], query: string) {
+  const needle = query.trim().toLowerCase();
+  if (!needle) {
+    return pullRequests;
+  }
+  return pullRequests.filter(
+    (pullRequest) =>
+      pullRequest.title.toLowerCase().includes(needle) ||
+      pullRequest.number.toString().includes(needle) ||
+      pullRequest.baseRefName.toLowerCase().includes(needle) ||
+      pullRequest.headRefName.toLowerCase().includes(needle),
+  );
+}
+
+const TARGET_MODES: Array<{
+  value: ReviewTargetKind;
+  label: string;
+  icon: ReactNode;
+}> = [
+  {
+    value: "workingTree",
+    label: "Working tree",
+    icon: <GitCompare className="size-3.5 text-[var(--rd-pencil)]" />,
+  },
+  {
+    value: "branch",
+    label: "Branch",
+    icon: <GitBranch className="size-3.5 text-[var(--rd-pencil)]" />,
+  },
+  {
+    value: "commit",
+    label: "Commit",
+    icon: <GitCommitHorizontal className="size-3.5 text-[var(--rd-pencil)]" />,
+  },
+  {
+    value: "commitRange",
+    label: "Commit range",
+    icon: <GitCompare className="size-3.5 text-[var(--rd-pencil)]" />,
+  },
+  {
+    value: "pullRequest",
+    label: "Pull request",
+    icon: <GitBranch className="size-3.5 text-[var(--rd-pencil)]" />,
+  },
+];

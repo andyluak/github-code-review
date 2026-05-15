@@ -1,4 +1,13 @@
-import { useEffect, useState, type ReactNode } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ComponentProps,
+  type ReactNode,
+} from "react";
 import {
   Bot,
   ChevronDown,
@@ -48,9 +57,17 @@ type SectionKey = "private" | "draft" | "agent";
 
 export function Inspector(props: InspectorProps) {
   const { session, mode, onModeChange, workspaceState } = props;
-  const ledger = collectLedger(session, workspaceState);
-  const basket = ledger.filter(
-    (entry) => entry.kind === "public-file-draft" || entry.kind === "review-inline",
+  const ledger = useMemo(
+    () => collectLedger(session, workspaceState),
+    [session, workspaceState],
+  );
+  const basket = useMemo(
+    () =>
+      ledger.filter(
+        (entry) =>
+          entry.kind === "public-file-draft" || entry.kind === "review-inline",
+      ),
+    [ledger],
   );
 
   return (
@@ -149,11 +166,10 @@ function FileMode({
               onToggle={() => toggle("private")}
               icon={<NotebookPen className="size-3.5 text-[var(--rd-graphite)]" />}
             >
-              <Textarea
+              <BufferedTextarea
+                key={`${file.id}-private`}
                 value={fileState?.privateNote ?? ""}
-                onChange={(event) =>
-                  onPatchFileState(file.id, { privateNote: event.currentTarget.value })
-                }
+                onCommit={(value) => onPatchFileState(file.id, { privateNote: value })}
                 placeholder="Notes for me. These never publish."
                 className="min-h-32 resize-none border-0 bg-[var(--rd-ink-2)] text-[13px] text-[var(--rd-cream)] placeholder:text-[var(--rd-pencil)]"
               />
@@ -165,10 +181,11 @@ function FileMode({
               onToggle={() => toggle("draft")}
               icon={<MessageSquare className="size-3.5 text-[var(--rd-vermillion-2)]" />}
             >
-              <Textarea
+              <BufferedTextarea
+                key={`${file.id}-draft`}
                 value={fileState?.publishableDraft ?? ""}
-                onChange={(event) =>
-                  onPatchFileState(file.id, { publishableDraft: event.currentTarget.value })
+                onCommit={(value) =>
+                  onPatchFileState(file.id, { publishableDraft: value })
                 }
                 placeholder="Draft a publishable review comment."
                 className="min-h-32 resize-none border-0 bg-[var(--rd-ink-2)] text-[13px] text-[var(--rd-cream)] placeholder:text-[var(--rd-pencil)]"
@@ -225,9 +242,12 @@ function LedgerMode({
   onJumpToNote: InspectorProps["onJumpToNote"];
 }) {
   const [filter, setFilter] = useState<LedgerFilter>("all");
-  const counts = countByKind(ledger);
-  const filtered = filterLedger(ledger, filter);
-  const groups = groupLedgerByFile(session, filtered);
+  const counts = useMemo(() => countByKind(ledger), [ledger]);
+  const filtered = useMemo(() => filterLedger(ledger, filter), [filter, ledger]);
+  const groups = useMemo(
+    () => groupLedgerByFile(session, filtered),
+    [filtered, session],
+  );
 
   return (
     <div className="px-4 py-4">
@@ -370,6 +390,61 @@ function AccordionSection({
   );
 }
 
+function BufferedTextarea({
+  value,
+  onCommit,
+  onBlur,
+  ...props
+}: Omit<ComponentProps<typeof Textarea>, "value" | "onChange"> & {
+  value: string;
+  onCommit: (value: string) => void;
+}) {
+  const [draft, setDraft] = useState(value);
+  const valueRef = useRef(draft);
+  const committedRef = useRef(value);
+  const onCommitRef = useRef(onCommit);
+
+  useEffect(() => {
+    onCommitRef.current = onCommit;
+  }, [onCommit]);
+
+  useEffect(() => {
+    setDraft(value);
+    valueRef.current = value;
+    committedRef.current = value;
+  }, [value]);
+
+  const commit = useCallback(() => {
+    const nextValue = valueRef.current;
+    if (nextValue === committedRef.current) {
+      return;
+    }
+
+    committedRef.current = nextValue;
+    onCommitRef.current(nextValue);
+  }, []);
+
+  useEffect(() => {
+    valueRef.current = draft;
+    const timer = window.setTimeout(commit, 250);
+    return () => window.clearTimeout(timer);
+  }, [commit, draft]);
+
+  useEffect(() => () => commit(), [commit]);
+
+  return (
+    <Textarea
+      {...props}
+      value={draft}
+      onChange={(event) => setDraft(event.currentTarget.value)}
+      onBlur={(event) => {
+        commit();
+        onBlur?.(event);
+      }}
+    />
+  );
+}
+
 function AgentContext({ session, file }: { session: ReviewSession; file: ReviewFile }) {
   if (session.order.source !== "agent" && !file.reviewReason && file.agentNotes.length === 0) {
     return (
@@ -407,7 +482,7 @@ function AgentContext({ session, file }: { session: ReviewSession; file: ReviewF
   );
 }
 
-function BasketFooter({ basket }: { basket: LedgerEntry[] }) {
+const BasketFooter = memo(function BasketFooter({ basket }: { basket: LedgerEntry[] }) {
   return (
     <div className="border-t border-[var(--rd-hair)]">
       <div className="flex items-baseline justify-between px-5 pt-4">
@@ -456,4 +531,4 @@ function BasketFooter({ basket }: { basket: LedgerEntry[] }) {
       </div>
     </div>
   );
-}
+});

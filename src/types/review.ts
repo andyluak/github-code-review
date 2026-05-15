@@ -2,7 +2,24 @@ export type CreateReviewSessionRequest = {
   repoPath: string;
   baseRef?: string | null;
   headRef?: string | null;
+  target?: ReviewTargetRequest | null;
 };
+
+export type ReviewTargetRequest =
+  | { kind: "workingTree" }
+  | { kind: "branch"; baseRef: string; headRef: string }
+  | { kind: "commit"; commit: string }
+  | { kind: "commitRange"; fromRef: string; toRef: string }
+  | {
+      kind: "pullRequest";
+      remote?: string | null;
+      number?: number | null;
+      url?: string | null;
+      baseRef?: string | null;
+      headRef?: string | null;
+    };
+
+export type ReviewTargetKind = ReviewTargetRequest["kind"];
 
 export type ListReviewRefsRequest = {
   repoPath: string;
@@ -27,8 +44,18 @@ export type RepoRefs = {
   requestedPath: string;
   root: string;
   currentBranch: string;
+  defaultBranch?: string | null;
   headSha: string;
+  remotes: GitRemote[];
   refs: GitRef[];
+  commits: GitCommit[];
+  pullRequests: PullRequestSummary[];
+  pullRequestError?: string | null;
+};
+
+export type GitRemote = {
+  name: string;
+  url: string;
 };
 
 export type GitRef = {
@@ -41,8 +68,29 @@ export type GitRef = {
 
 export type GitRefKind = "local" | "remote";
 
+export type GitCommit = {
+  sha: string;
+  shortSha: string;
+  title: string;
+  author: string;
+  date: string;
+  refs: string;
+};
+
+export type PullRequestSummary = {
+  number: number;
+  title: string;
+  baseRefName: string;
+  headRefName: string;
+  headRefOid: string;
+  url: string;
+  state: string;
+};
+
 export type ReviewSession = {
   id: string;
+  snapshotHash: string;
+  target: ReviewTarget;
   repo: RepoSummary;
   summary: SessionSummary;
   files: ReviewFile[];
@@ -50,6 +98,21 @@ export type ReviewSession = {
   patchArtifact: PatchArtifact;
   order: ReviewOrder;
 };
+
+export type ReviewTarget =
+  | { kind: "workingTree"; label: string }
+  | { kind: "branch"; baseRef: string; headRef: string; label: string }
+  | { kind: "commit"; commit: string; label: string }
+  | { kind: "commitRange"; fromRef: string; toRef: string; label: string }
+  | {
+      kind: "pullRequest";
+      remote?: string | null;
+      number?: number | null;
+      url?: string | null;
+      baseRef: string;
+      headRef: string;
+      label: string;
+    };
 
 export type RepoSummary = {
   requestedPath: string;
@@ -72,6 +135,7 @@ export type SessionSummary = {
 export type ReviewFile = {
   id: string;
   path: string;
+  patchHash: string;
   oldPath?: string | null;
   changeKind: ChangeKind;
   additions: number;
@@ -169,6 +233,7 @@ export type InlineComment = {
 
 export type SessionFileState = {
   status: ViewedStatus;
+  lastPatchHash?: string;
   privateNote: string;
   publishableDraft: string;
   inlineComments: InlineComment[];
@@ -187,6 +252,7 @@ export type RecentRepo = {
 
 export type ReviewHistoryItem = {
   id: string;
+  snapshotHash: string;
   repoRoot: string;
   requestedPath: string;
   repoName: string;
@@ -197,8 +263,10 @@ export type ReviewHistoryItem = {
   createdBy?: string | null;
   baseRef?: string | null;
   headRef?: string | null;
+  target: ReviewTarget;
   totalFiles: number;
   additions: number;
   deletions: number;
   createdAt: string;
+  lastRefreshedAt: string;
 };
