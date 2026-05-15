@@ -15,8 +15,10 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { useDiffViewMode } from "@/hooks/use-diff-view-mode";
 import { useFontZoom } from "@/hooks/use-font-zoom";
 import {
+  clearReviewHistory,
   createDefaultFileState,
   createReviewSession,
+  deleteReviewHistoryItem,
   getActiveReviewSession,
   getGlobalActiveReviewSession,
   importActiveReviewSession,
@@ -26,6 +28,7 @@ import {
   loadLastRepoPath,
   loadRecentRepos,
   loadReviewHistory,
+  loadReviewSessionSnapshot,
   loadWorkspaceState,
   rememberRepo,
   rememberReviewSession,
@@ -376,6 +379,40 @@ function App() {
     }
   }, [applySession, isLoading, loadRefsForRepo]);
 
+  const refreshAgentSession = useCallback(
+    async (manifestPath: string) => {
+      const requestId = sessionLoadId.current + 1;
+      sessionLoadId.current = requestId;
+      setIsLoading(true);
+      setError(null);
+
+      try {
+        const nextSession = await importReviewSession({ manifestPath });
+        if (requestId !== sessionLoadId.current) {
+          return;
+        }
+        if (shouldKeepCurrentSession(nextSession, sessionRef.current)) {
+          setError("Agent session has no matching changed files. Current review kept.");
+          return;
+        }
+        applySession(nextSession);
+        void loadRefsForRepo(nextSession.repo.root, {
+          applyDefaults: false,
+          loadActive: false,
+        });
+      } catch (caught) {
+        if (requestId === sessionLoadId.current) {
+          setError(caught instanceof Error ? caught.message : String(caught));
+        }
+      } finally {
+        if (requestId === sessionLoadId.current) {
+          setIsLoading(false);
+        }
+      }
+    },
+    [applySession, loadRefsForRepo],
+  );
+
   const startSession = useCallback(
     async (overrides?: {
       repoPath?: string;
@@ -446,8 +483,14 @@ function App() {
   );
 
   const createSession = useCallback(() => {
+    const currentSession = sessionRef.current;
+    if (currentSession?.order.source === "agent" && currentSession.order.manifestPath) {
+      void refreshAgentSession(currentSession.order.manifestPath);
+      return;
+    }
+
     void startSession();
-  }, [startSession]);
+  }, [refreshAgentSession, startSession]);
 
   const startTargetSession = useCallback(
     (target: ReviewTargetRequest, refs?: { baseRef?: string; headRef?: string }) => {
@@ -629,31 +672,55 @@ function App() {
 
   const resumeReview = useCallback(
     (item: ReviewHistoryItem) => {
-      setRepoPath(item.repoRoot);
-      setBaseRef(item.baseRef ?? "");
-      setHeadRef(item.headRef ?? "");
-      if (item.target) {
-        applyTargetControls(item.target, {
-          setTargetKind,
-          setCommitRef,
-          setRangeFromRef,
-          setRangeToRef,
-          setPullRequestNumber,
-          setPullRequestInput,
+      const cachedSession = loadReviewSessionSnapshot(item.id);
+
+      if (cachedSession) {
+        applySession(cachedSession);
+      } else {
+        setRepoPath(item.repoRoot);
+        setBaseRef(item.baseRef ?? "");
+        setHeadRef(item.headRef ?? "");
+        if (item.target) {
+          applyTargetControls(item.target, {
+            setTargetKind,
+            setCommitRef,
+            setRangeFromRef,
+            setRangeToRef,
+            setPullRequestNumber,
+            setPullRequestInput,
+          });
+        }
+      }
+
+      void loadRefsForRepo(item.repoRoot, {
+        applyDefaults: false,
+        loadActive: false,
+      });
+
+      const manifestPath = cachedSession?.order.manifestPath ?? item.manifestPath;
+      if (item.orderSource === "agent" && manifestPath) {
+        void refreshAgentSession(manifestPath);
+      } else {
+        void startSession({
+          repoPath: item.repoRoot,
+          baseRef: item.baseRef,
+          headRef: item.headRef,
+          target: item.target
+            ? reviewTargetToRequest(item.target)
+            : legacyHistoryTargetToRequest(item),
         });
       }
-      void loadRefsForRepo(item.repoRoot, { applyDefaults: false });
-      void startSession({
-        repoPath: item.repoRoot,
-        baseRef: item.baseRef,
-        headRef: item.headRef,
-        target: item.target
-          ? reviewTargetToRequest(item.target)
-          : legacyHistoryTargetToRequest(item),
-      });
     },
-    [loadRefsForRepo, startSession],
+    [applySession, loadRefsForRepo, refreshAgentSession, startSession],
   );
+
+  const deleteHistoryItem = useCallback((item: ReviewHistoryItem) => {
+    setReviewHistory(deleteReviewHistoryItem(item.id));
+  }, []);
+
+  const clearHistory = useCallback(() => {
+    setReviewHistory(clearReviewHistory());
+  }, []);
 
   const refreshRefs = useCallback(() => {
     if (!repoPath || isRefsLoading) {
@@ -875,6 +942,8 @@ function App() {
           onPickRepo={pickRepo}
           onSelectRecentRepo={openRepoPath}
           onSelectReviewHistory={resumeReview}
+          onDeleteReviewHistory={deleteHistoryItem}
+          onClearReviewHistory={clearHistory}
           onRefreshRefs={refreshRefs}
           onImportAgentSession={importAgentSession}
           onCreateSession={createSession}

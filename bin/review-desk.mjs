@@ -21,6 +21,9 @@ function main() {
 
   try {
     switch (command) {
+      case "session":
+        handleSessionCommand(rest);
+        break;
       case "create-session":
       case "create":
         createSession(parseArgs(rest));
@@ -45,23 +48,48 @@ function main() {
   }
 }
 
+function handleSessionCommand(rawArgs) {
+  const [subcommand, ...rest] = rawArgs;
+
+  switch (subcommand) {
+    case "create":
+    case "new":
+      createSession(parseArgs(rest));
+      break;
+    case "activate":
+      activateSession(parseArgs(rest));
+      break;
+    case "list":
+      listSessions(parseArgs(rest));
+      break;
+    case "help":
+    case "--help":
+    case "-h":
+    case undefined:
+      printHelp();
+      break;
+    default:
+      fail(`Unknown session command: ${subcommand}`);
+  }
+}
+
 function createSession(args) {
   const repoRoot = gitRoot(args.repo ?? ".");
   const sourceManifest = readSourceManifest(args);
-  const baseRef = clean(args.base ?? sourceManifest.baseRef);
-  const headRef = clean(args.head ?? sourceManifest.headRef);
-  const changedPaths = getChangedPaths(repoRoot, baseRef, headRef);
+  const target = resolveReviewTarget(repoRoot, args, sourceManifest);
+  const changedPaths = getChangedPaths(repoRoot, target);
   const generated = changedPaths.filter(isGeneratedPath);
   const reviewable = changedPaths.filter((path) => !isGeneratedPath(path));
   const title =
     clean(args.title ?? sourceManifest.title) ??
-    `Review ${headRef ? `${baseRef ?? "base"}...${headRef}` : "working tree"}`;
+    `Review ${target.label}`;
   const createdBy = clean(args["created-by"] ?? args.agent ?? sourceManifest.createdBy) ?? "agent";
   const manifest = {
     version: 1,
     repoRoot,
-    ...(baseRef ? { baseRef } : {}),
-    ...(headRef ? { headRef } : {}),
+    target: target.request,
+    ...(target.baseRef ? { baseRef: target.baseRef } : {}),
+    ...(target.headRef ? { headRef: target.headRef } : {}),
     title,
     createdBy,
     fileOrder:
@@ -75,7 +103,6 @@ function createSession(args) {
     args.output ??
     join(repoRoot, SESSION_DIR, `${timestamp()}-${slug(title)}.review-session.json`);
 
-  mkdirSync(resolve(repoRoot, SESSION_DIR), { recursive: true });
   writeJson(outputPath, manifest);
 
   if (args.activate !== false) {
@@ -86,6 +113,7 @@ function createSession(args) {
     writeStdout({
       manifestPath: outputPath,
       active: args.activate !== false,
+      target: target.request,
       fileOrder: manifest.fileOrder.length,
       excludedPaths: manifest.excludedPaths.length,
     });
@@ -157,15 +185,204 @@ function readSourceManifest(args) {
   return {};
 }
 
-function getChangedPaths(repoRoot, baseRef, headRef) {
-  const diffArgs = ["diff", "--name-only", "--find-renames"];
-  if (baseRef && headRef) {
-    diffArgs.push(`${baseRef}...${headRef}`);
-  } else if (baseRef) {
-    diffArgs.push(baseRef);
-  } else {
-    diffArgs.push("HEAD");
+function resolveReviewTarget(repoRoot, args, sourceManifest) {
+  const cliTarget = clean(args.target ?? args.t);
+
+  if (cliTarget) {
+    return resolveTargetRequest(repoRoot, targetRequestFromArgs(cliTarget, args));
   }
+
+  if (sourceManifest.target) {
+    return resolveTargetRequest(repoRoot, sourceManifest.target);
+  }
+
+  const baseRef = clean(args.base ?? sourceManifest.baseRef);
+  const headRef = clean(args.head ?? sourceManifest.headRef);
+
+  if (baseRef && headRef) {
+    return resolveTargetRequest(repoRoot, {
+      kind: "branch",
+      baseRef,
+      headRef,
+    });
+  }
+
+  if (baseRef) {
+    return resolveTargetRequest(repoRoot, {
+      kind: "branch",
+      baseRef,
+      headRef: "WORKTREE",
+    });
+  }
+
+  return resolveTargetRequest(repoRoot, { kind: "workingTree" });
+}
+
+function targetRequestFromArgs(rawKind, args) {
+  const kind = normalizeTargetKind(rawKind);
+
+  switch (kind) {
+    case "workingTree":
+      return { kind };
+    case "branch":
+      return {
+        kind,
+        baseRef: required(args.base, "base ref"),
+        headRef: required(args.head, "head ref"),
+      };
+    case "commit":
+      return {
+        kind,
+        commit: required(args.commit ?? args.sha ?? args._[0], "commit"),
+      };
+    case "commitRange":
+      return {
+        kind,
+        fromRef: required(args.from ?? args["from-ref"] ?? args.base ?? args._[0], "from ref"),
+        toRef: required(args.to ?? args["to-ref"] ?? args.head ?? args._[1], "to ref"),
+      };
+    case "pullRequest": {
+      const rawPr = clean(args.pr ?? args.number ?? args._[0]);
+      const url = clean(args.url ?? (rawPr?.startsWith("http") ? rawPr : undefined));
+      return {
+        kind,
+        remote: clean(args.remote) ?? null,
+        number: rawPr && !rawPr.startsWith("http") ? parsePrNumber(rawPr) : null,
+        url: url ?? null,
+        baseRef: clean(args.base) ?? null,
+        headRef: clean(args.head) ?? null,
+      };
+    }
+  }
+}
+
+function normalizeTargetKind(value) {
+  switch (String(value).trim()) {
+    case "working-tree":
+    case "workingTree":
+    case "worktree":
+    case "wt":
+      return "workingTree";
+    case "branch":
+    case "branches":
+      return "branch";
+    case "commit":
+      return "commit";
+    case "commit-range":
+    case "commitRange":
+    case "range":
+      return "commitRange";
+    case "pull-request":
+    case "pullRequest":
+    case "pr":
+      return "pullRequest";
+    default:
+      fail(`Unknown review target: ${value}`);
+  }
+}
+
+function resolveTargetRequest(repoRoot, request) {
+  switch (request.kind) {
+    case "workingTree":
+      return {
+        request: { kind: "workingTree" },
+        diffTarget: "HEAD",
+        includeUntracked: true,
+        baseRef: null,
+        headRef: null,
+        label: "working tree",
+      };
+    case "branch": {
+      const baseRef = required(request.baseRef, "base ref");
+      const rawHeadRef = required(request.headRef, "head ref");
+      const isWorktree = isWorktreeRef(rawHeadRef);
+      const headRef = isWorktree ? "WORKTREE" : rawHeadRef;
+      return {
+        request: { kind: "branch", baseRef, headRef },
+        diffTarget: isWorktree ? baseRef : `${baseRef}...${headRef}`,
+        includeUntracked: isWorktree,
+        baseRef,
+        headRef: isWorktree ? null : headRef,
+        label: isWorktree ? `${baseRef} -> working tree` : `${baseRef}...${headRef}`,
+      };
+    }
+    case "commit": {
+      const commit = required(request.commit, "commit");
+      const baseRef = singleCommitBase(repoRoot, commit);
+      return {
+        request: { kind: "commit", commit },
+        diffTarget: `${baseRef}..${commit}`,
+        includeUntracked: false,
+        baseRef,
+        headRef: commit,
+        label: `${commit}^..${commit}`,
+      };
+    }
+    case "commitRange": {
+      const fromRef = required(request.fromRef, "from ref");
+      const toRef = required(request.toRef, "to ref");
+      return {
+        request: { kind: "commitRange", fromRef, toRef },
+        diffTarget: `${fromRef}..${toRef}`,
+        includeUntracked: false,
+        baseRef: fromRef,
+        headRef: toRef,
+        label: `${fromRef}..${toRef}`,
+      };
+    }
+    case "pullRequest":
+      return resolvePullRequestTarget(repoRoot, request);
+    default:
+      fail(`Unsupported manifest target kind: ${request.kind}`);
+  }
+}
+
+function resolvePullRequestTarget(repoRoot, request) {
+  const remote = clean(request.remote) ?? defaultRemoteName(repoRoot) ?? "origin";
+  const url = clean(request.url);
+  const requestedNumber = coerceNumber(request.number) ?? parsePrNumber(url ?? "");
+  const metadataSelector = url ?? (requestedNumber ? String(requestedNumber) : null);
+  const metadata = metadataSelector ? tryGhPrView(repoRoot, metadataSelector) : null;
+  const number = requestedNumber ?? coerceNumber(metadata?.number);
+  const baseRef = clean(request.baseRef) ?? clean(metadata?.baseRefName);
+  const prUrl = url ?? clean(metadata?.url);
+
+  if (!baseRef) {
+    fail("Pull request target needs --base, a PR number, or a PR URL that gh can resolve.");
+  }
+
+  const fetchedHeadRef = number ? tryFetchPullRequestHead(repoRoot, remote, number) : null;
+  const headRef =
+    fetchedHeadRef ??
+    clean(request.headRef) ??
+    clean(metadata?.headRefOid);
+
+  if (!headRef) {
+    fail("Pull request target needs --head, a PR number, or a PR URL that gh can resolve.");
+  }
+
+  const baseForDiff = bestBaseRef(repoRoot, remote, baseRef);
+
+  return {
+    request: {
+      kind: "pullRequest",
+      remote,
+      number: number ?? null,
+      url: prUrl ?? null,
+      baseRef,
+      headRef: clean(request.headRef) ?? clean(metadata?.headRefOid) ?? headRef,
+    },
+    diffTarget: `${baseForDiff}...${headRef}`,
+    includeUntracked: false,
+    baseRef: baseForDiff,
+    headRef,
+    label: number ? `PR #${number}: ${baseForDiff}...${headRef}` : `PR: ${baseForDiff}...${headRef}`,
+  };
+}
+
+function getChangedPaths(repoRoot, target) {
+  const diffArgs = ["diff", "--name-only", "--find-renames"];
+  diffArgs.push(target.diffTarget ?? "HEAD");
   diffArgs.push("--");
 
   const tracked = git(repoRoot, diffArgs)
@@ -173,7 +390,7 @@ function getChangedPaths(repoRoot, baseRef, headRef) {
     .map((line) => line.trim())
     .filter(Boolean);
 
-  if (baseRef || headRef) {
+  if (!target.includeUntracked) {
     return unique(tracked);
   }
 
@@ -336,12 +553,116 @@ function parseArgs(rawArgs) {
   return args;
 }
 
+function required(value, label) {
+  const cleaned = clean(value);
+  if (!cleaned) {
+    fail(`Missing ${label}`);
+  }
+  return cleaned;
+}
+
+function isWorktreeRef(value) {
+  const normalized = value.trim().toLowerCase();
+  return normalized === "worktree" || normalized === "working-tree" || normalized === "working tree";
+}
+
+function singleCommitBase(repoRoot, commit) {
+  try {
+    return git(repoRoot, ["rev-parse", "--verify", `${commit}^`]).trim();
+  } catch {
+    return "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+  }
+}
+
+function defaultRemoteName(repoRoot) {
+  return listRemotes(repoRoot)[0]?.name;
+}
+
+function listRemotes(repoRoot) {
+  return git(repoRoot, ["remote", "-v"])
+    .split("\n")
+    .map((line) => line.trim().split(/\s+/))
+    .filter((parts) => parts.length >= 3 && parts[2].includes("fetch"))
+    .filter((parts, index, rows) => rows.findIndex((row) => row[0] === parts[0]) === index)
+    .map((parts) => ({ name: parts[0], url: parts[1] }));
+}
+
+function bestBaseRef(repoRoot, remote, baseRef) {
+  const remoteBase = `${remote}/${baseRef}`;
+  return gitRefExists(repoRoot, remoteBase) ? remoteBase : baseRef;
+}
+
+function gitRefExists(repoRoot, ref) {
+  try {
+    git(repoRoot, ["rev-parse", "--verify", "--quiet", ref]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function tryGhPrView(repoRoot, selector) {
+  try {
+    return JSON.parse(
+      command(repoRoot, "gh", [
+        "pr",
+        "view",
+        selector,
+        "--json",
+        "number,title,baseRefName,headRefName,headRefOid,url,state",
+      ]),
+    );
+  } catch {
+    return null;
+  }
+}
+
+function tryFetchPullRequestHead(repoRoot, remote, number) {
+  try {
+    const localRef = `refs/remotes/review-desk/pr-${number}`;
+    git(repoRoot, ["fetch", remote, `pull/${number}/head:${localRef}`]);
+    return localRef;
+  } catch {
+    return null;
+  }
+}
+
+function parsePrNumber(value) {
+  const cleaned = clean(value)?.replace(/\/$/, "");
+  if (!cleaned) {
+    return null;
+  }
+  if (/^\d+$/.test(cleaned)) {
+    return Number(cleaned);
+  }
+  const match = cleaned.match(/\/pull\/(\d+)/);
+  return match ? Number(match[1]) : null;
+}
+
+function coerceNumber(value) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && /^\d+$/.test(value.trim())) {
+    return Number(value.trim());
+  }
+  return null;
+}
+
 function gitRoot(path) {
   return git(resolve(path ?? "."), ["rev-parse", "--show-toplevel"]).trim();
 }
 
 function git(repoRoot, args) {
   return execFileSync("git", ["-C", repoRoot, ...args], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+}
+
+function command(repoRoot, commandName, args) {
+  return execFileSync(commandName, args, {
+    cwd: repoRoot,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -386,13 +707,21 @@ function printHelp() {
   console.log(`review-desk
 
 Usage:
-  review-desk create-session --repo . [--base main] [--head feature] [--title "..."]
-  review-desk create-session --repo . --stdin < manifest.json
-  review-desk create-session --repo . --manifest /tmp/session.json
+  review-desk session create --repo . --target working-tree --agent codex
+  review-desk session create --repo . --target branch --base main --head feature
+  review-desk session create --repo . --target commit --commit 5315b7c
+  review-desk session create --repo . --target range --from main --to HEAD
+  review-desk session create --repo . --target pr --pr 123
+  review-desk session create --repo . --stdin < manifest.json
+  review-desk session activate .review-desk/sessions/session.review-session.json
+  review-desk session list --repo .
+
+Aliases:
+  review-desk create-session --repo . [--base main] [--head feature]
   review-desk activate .review-desk/sessions/session.review-session.json
   review-desk list --repo .
 
-create-session writes .review-desk/sessions/*.review-session.json and marks it active.
+session create writes .review-desk/sessions/*.review-session.json and marks it active.
 The desktop app auto-loads the active session for an open repo.`);
 }
 

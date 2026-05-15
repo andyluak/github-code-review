@@ -74,10 +74,10 @@
     --rd-vermillion-bg: rgba(230, 106, 79, 0.12);
     --rd-vermillion-line: rgba(230, 106, 79, 0.55);
 
-    /* Diff colors — softer saturation; overlay alpha bumped so position reads even with CVD */
-    --rd-add: #5AB87C;
-    --rd-add-bg: rgba(90, 184, 124, 0.16);
-    --rd-add-line: rgba(90, 184, 124, 0.50);
+    /* Diff colors — low-alpha fills keep whole added files readable while line markers carry the state */
+    --rd-add: #72D391;
+    --rd-add-bg: rgba(114, 211, 145, 0.055);
+    --rd-add-line: rgba(114, 211, 145, 0.26);
     --rd-del: #D85C58;
     --rd-del-bg: rgba(216, 92, 88, 0.16);
     --rd-del-line: rgba(216, 92, 88, 0.50);

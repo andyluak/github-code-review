@@ -261,6 +261,7 @@ export type ReviewHistoryItem = {
   orderSource: ReviewOrderSource;
   title?: string | null;
   createdBy?: string | null;
+  manifestPath?: string | null;
   baseRef?: string | null;
   headRef?: string | null;
   target: ReviewTarget;

@@ -346,6 +346,8 @@ struct ReviewSessionManifest {
     #[serde(default)]
     head_ref: Option<String>,
     #[serde(default)]
+    target: Option<ReviewTargetRequest>,
+    #[serde(default)]
     title: Option<String>,
     #[serde(default)]
     created_by: Option<String>,
@@ -551,7 +553,7 @@ fn import_review_session_from_path(manifest_path: PathBuf) -> Result<ReviewSessi
         repo_path: manifest.repo_root.clone(),
         base_ref: manifest.base_ref.clone(),
         head_ref: manifest.head_ref.clone(),
-        target: None,
+        target: manifest.target.clone(),
     })?;
     apply_manifest_order(&mut session, manifest, &manifest_path);
     Ok(session)
@@ -1968,6 +1970,69 @@ mod tests {
             .excluded_files
             .iter()
             .any(|file| file.path == ".review-desk/sessions/review.review-session.json"));
+
+        fs::remove_dir_all(repo).unwrap();
+    }
+
+    #[test]
+    fn import_manifest_target_takes_precedence_over_legacy_refs() {
+        let repo = temp_repo();
+        fs::create_dir_all(repo.join(".review-desk/sessions")).unwrap();
+        fs::create_dir_all(repo.join("src")).unwrap();
+        fs::write(repo.join("README.md"), "initial\n").unwrap();
+        run_git(&repo, &["init"]);
+        run_git(&repo, &["config", "user.email", "review-desk@example.test"]);
+        run_git(&repo, &["config", "user.name", "Review Desk Test"]);
+        run_git(&repo, &["add", "README.md"]);
+        run_git(&repo, &["commit", "-m", "initial"]);
+
+        fs::write(repo.join("README.md"), "initial\ncommitted\n").unwrap();
+        run_git(&repo, &["add", "README.md"]);
+        run_git(&repo, &["commit", "-m", "change readme"]);
+        fs::write(repo.join("src/worktree.rs"), "pub fn dirty() {}\n").unwrap();
+
+        let manifest_path = repo
+            .join(".review-desk")
+            .join("sessions")
+            .join("commit.review-session.json");
+        let manifest = serde_json::json!({
+            "version": 1,
+            "repoRoot": repo.display().to_string(),
+            "baseRef": "HEAD",
+            "headRef": "WORKTREE",
+            "target": {
+                "kind": "commit",
+                "commit": "HEAD"
+            },
+            "title": "Review one commit",
+            "createdBy": "codex",
+            "fileOrder": [
+                {
+                    "path": "README.md",
+                    "group": "Commit",
+                    "reason": "This is the selected commit."
+                }
+            ]
+        });
+        fs::write(
+            &manifest_path,
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        let session = import_review_session(ImportReviewSessionRequest {
+            manifest_path: manifest_path.display().to_string(),
+        })
+        .unwrap();
+        let paths = session
+            .files
+            .iter()
+            .map(|file| file.path.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(matches!(session.target, ReviewTarget::Commit { .. }));
+        assert!(paths.contains(&"README.md"));
+        assert!(!paths.contains(&"src/worktree.rs"));
 
         fs::remove_dir_all(repo).unwrap();
     }

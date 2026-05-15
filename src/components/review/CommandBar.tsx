@@ -10,6 +10,7 @@ import {
   Loader2,
   Play,
   RefreshCw,
+  Trash2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -68,6 +69,8 @@ type CommandBarProps = {
   onPickRepo: () => void;
   onSelectRecentRepo: (path: string) => void;
   onSelectReviewHistory: (item: ReviewHistoryItem) => void;
+  onDeleteReviewHistory: (item: ReviewHistoryItem) => void;
+  onClearReviewHistory: () => void;
   onRefreshRefs: () => void;
   onImportAgentSession: () => void;
   onCreateSession: () => void;
@@ -105,6 +108,8 @@ export function CommandBar({
   onPickRepo,
   onSelectRecentRepo,
   onSelectReviewHistory,
+  onDeleteReviewHistory,
+  onClearReviewHistory,
   onRefreshRefs,
   onImportAgentSession,
   onCreateSession,
@@ -222,7 +227,12 @@ export function CommandBar({
           {session ? "Refresh" : "Create Session"}
         </Button>
 
-        <ReviewHistoryMenu history={reviewHistory} onSelectReview={onSelectReviewHistory} />
+        <ReviewHistoryMenu
+          history={reviewHistory}
+          onSelectReview={onSelectReviewHistory}
+          onDeleteReview={onDeleteReviewHistory}
+          onClearHistory={onClearReviewHistory}
+        />
 
         <Tooltip>
           <TooltipTrigger asChild>
@@ -905,9 +915,13 @@ function PullRequestPicker({
 function ReviewHistoryMenu({
   history,
   onSelectReview,
+  onDeleteReview,
+  onClearHistory,
 }: {
   history: ReviewHistoryItem[];
   onSelectReview: (item: ReviewHistoryItem) => void;
+  onDeleteReview: (item: ReviewHistoryItem) => void;
+  onClearHistory: () => void;
 }) {
   return (
     <DropdownMenu>
@@ -934,21 +948,44 @@ function ReviewHistoryMenu({
         {history.map((item) => (
           <DropdownMenuItem
             key={`${item.id}-${item.createdAt}`}
-            className="flex-col items-start gap-1 px-2 py-1.5"
+            className="items-start gap-2 px-2 py-1.5"
             onSelect={() => onSelectReview(item)}
           >
-            <span className="text-[12px] font-medium text-[var(--rd-cream)]">
-              {item.repoName}
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-[12px] font-medium text-[var(--rd-cream)]">
+                {item.repoName}
+              </span>
+              <span className="block truncate font-mono text-[10px] text-[var(--rd-graphite)]">
+                {item.orderSource === "agent" ? "agent" : "git"} · {reviewTargetLabel(item)} ·{" "}
+                {item.totalFiles} files · +{item.additions} −{item.deletions}
+              </span>
+              <span className="block text-[10px] text-[var(--rd-pencil)]">
+                {formatReviewTime(item.createdAt)}
+              </span>
             </span>
-            <span className="font-mono text-[10px] text-[var(--rd-graphite)]">
-              {item.orderSource === "agent" ? "agent" : "git"} · {reviewTargetLabel(item)} ·{" "}
-              {item.totalFiles} files · +{item.additions} −{item.deletions}
-            </span>
-            <span className="text-[10px] text-[var(--rd-pencil)]">
-              {formatReviewTime(item.createdAt)}
-            </span>
+            <button
+              type="button"
+              className="mt-0.5 inline-flex size-6 shrink-0 items-center justify-center rounded-md text-[var(--rd-pencil)] hover:bg-[var(--rd-del-bg)] hover:text-[var(--rd-del)] focus-visible:bg-[var(--rd-del-bg)] focus-visible:text-[var(--rd-del)] focus-visible:outline-none"
+              aria-label={`Delete ${item.repoName} from review history`}
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                onDeleteReview(item);
+              }}
+            >
+              <Trash2 className="size-3.5" />
+            </button>
           </DropdownMenuItem>
         ))}
+        <DropdownMenuSeparator className="bg-[var(--rd-hair)]" />
+        <DropdownMenuItem
+          variant="destructive"
+          className="justify-center px-2 py-1.5 text-[11px] text-[var(--rd-del)] focus:bg-[var(--rd-del-bg)] focus:text-[var(--rd-del)]"
+          onSelect={onClearHistory}
+        >
+          Clear history
+        </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
   );

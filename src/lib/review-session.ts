@@ -114,11 +114,17 @@ export function loadLastRepoPath(): string {
 }
 
 export function loadReviewHistory(): ReviewHistoryItem[] {
-  return readJson<ReviewHistoryItem[]>(REVIEW_HISTORY_KEY, []);
+  const history = readJson<ReviewHistoryItem[]>(REVIEW_HISTORY_KEY, []);
+  const nextHistory = dedupeReviewHistory(history);
+  if (nextHistory.length !== history.length) {
+    window.localStorage.setItem(REVIEW_HISTORY_KEY, JSON.stringify(nextHistory));
+    pruneReviewSessionSnapshots(nextHistory);
+  }
+  return nextHistory;
 }
 
 export function rememberReviewSession(session: ReviewSession): ReviewHistoryItem[] {
-  const existing = loadReviewHistory().find((item) => item.id === session.id);
+  const currentHistory = loadReviewHistory();
   const now = new Date().toISOString();
   const nextItem: ReviewHistoryItem = {
     id: session.id,
@@ -131,22 +137,192 @@ export function rememberReviewSession(session: ReviewSession): ReviewHistoryItem
     orderSource: session.order.source,
     title: session.order.title,
     createdBy: session.order.createdBy,
+    manifestPath: session.order.manifestPath,
     baseRef: session.repo.baseRef,
     headRef: session.repo.headRef,
     target: session.target,
     totalFiles: session.summary.includedFiles,
     additions: session.summary.additions,
     deletions: session.summary.deletions,
-    createdAt: existing?.createdAt ?? now,
+    createdAt: createdAtForHistoryItem(currentHistory, session, now),
     lastRefreshedAt: now,
   };
+  const nextKey = reviewHistoryKey(nextItem);
+  const existingAgent = currentHistory.find(
+    (item) => reviewHistoryKey(item) === nextKey && item.orderSource === "agent",
+  );
+
+  if (nextItem.orderSource === "git" && existingAgent) {
+    return currentHistory;
+  }
+
   const nextHistory = [
     nextItem,
-    ...loadReviewHistory().filter((item) => item.id !== nextItem.id),
+    ...currentHistory.filter(
+      (item) => item.id !== nextItem.id && reviewHistoryKey(item) !== nextKey,
+    ),
   ].slice(0, 20);
 
   window.localStorage.setItem(REVIEW_HISTORY_KEY, JSON.stringify(nextHistory));
+  saveReviewSessionSnapshot(session);
+  pruneReviewSessionSnapshots(nextHistory);
   return nextHistory;
+}
+
+export function deleteReviewHistoryItem(sessionId: string): ReviewHistoryItem[] {
+  const nextHistory = loadReviewHistory().filter((item) => item.id !== sessionId);
+  window.localStorage.setItem(REVIEW_HISTORY_KEY, JSON.stringify(nextHistory));
+  deleteReviewSessionSnapshot(sessionId);
+  return nextHistory;
+}
+
+export function clearReviewHistory(): ReviewHistoryItem[] {
+  const currentHistory = loadReviewHistory();
+  window.localStorage.removeItem(REVIEW_HISTORY_KEY);
+  for (const item of currentHistory) {
+    deleteReviewSessionSnapshot(item.id);
+  }
+  pruneReviewSessionSnapshots([]);
+  return [];
+}
+
+export function loadReviewSessionSnapshot(sessionId: string): ReviewSession | null {
+  return readJson<ReviewSession | null>(reviewSessionSnapshotKey(sessionId), null);
+}
+
+export function saveReviewSessionSnapshot(session: ReviewSession) {
+  try {
+    window.localStorage.setItem(
+      reviewSessionSnapshotKey(session.id),
+      JSON.stringify(session),
+    );
+  } catch {
+    // Snapshots are an acceleration cache; history/state should keep working if storage is full.
+  }
+}
+
+export function pruneReviewSessionSnapshots(history = loadReviewHistory()) {
+  const activeIds = new Set(history.map((item) => item.id));
+  const staleKeys: string[] = [];
+
+  for (let index = 0; index < window.localStorage.length; index += 1) {
+    const key = window.localStorage.key(index);
+    if (
+      key?.startsWith(REVIEW_SESSION_SNAPSHOT_PREFIX) &&
+      !activeIds.has(key.slice(REVIEW_SESSION_SNAPSHOT_PREFIX.length))
+    ) {
+      staleKeys.push(key);
+    }
+  }
+
+  for (const key of staleKeys) {
+    window.localStorage.removeItem(key);
+  }
+}
+
+function createdAtForHistoryItem(
+  history: ReviewHistoryItem[],
+  session: ReviewSession,
+  fallback: string,
+) {
+  const exact = history.find((item) => item.id === session.id);
+  if (exact) {
+    return exact.createdAt;
+  }
+
+  const key = reviewHistoryKey({
+    id: session.id,
+    snapshotHash: session.snapshotHash,
+    repoRoot: session.repo.root,
+    requestedPath: session.repo.requestedPath,
+    repoName: basename(session.repo.root),
+    branch: session.repo.branch,
+    headSha: session.repo.headSha,
+    orderSource: session.order.source,
+    title: session.order.title,
+    createdBy: session.order.createdBy,
+    manifestPath: session.order.manifestPath,
+    baseRef: session.repo.baseRef,
+    headRef: session.repo.headRef,
+    target: session.target,
+    totalFiles: session.summary.includedFiles,
+    additions: session.summary.additions,
+    deletions: session.summary.deletions,
+    createdAt: fallback,
+    lastRefreshedAt: fallback,
+  });
+
+  return history.find((item) => reviewHistoryKey(item) === key)?.createdAt ?? fallback;
+}
+
+function dedupeReviewHistory(history: ReviewHistoryItem[]) {
+  const byKey = new Map<string, ReviewHistoryItem>();
+
+  for (const item of history) {
+    const key = reviewHistoryKey(item);
+    const existing = byKey.get(key);
+    if (!existing || shouldReplaceHistoryItem(item, existing)) {
+      byKey.set(key, item);
+    }
+  }
+
+  return [...byKey.values()];
+}
+
+function shouldReplaceHistoryItem(candidate: ReviewHistoryItem, current: ReviewHistoryItem) {
+  if (candidate.orderSource === "agent" && current.orderSource !== "agent") {
+    return true;
+  }
+
+  if (candidate.orderSource !== current.orderSource) {
+    return false;
+  }
+
+  return timestampValue(candidate.lastRefreshedAt) > timestampValue(current.lastRefreshedAt);
+}
+
+function reviewHistoryKey(item: ReviewHistoryItem) {
+  const target = item.target;
+  const repo = item.repoRoot;
+
+  if (target) {
+    switch (target.kind) {
+      case "workingTree":
+        return `${repo}|workingTree`;
+      case "branch":
+        return `${repo}|branch|${target.baseRef}|${normalHistoryRef(target.headRef)}`;
+      case "commit":
+        return `${repo}|commit|${target.commit}`;
+      case "commitRange":
+        return `${repo}|commitRange|${target.fromRef}|${target.toRef}`;
+      case "pullRequest":
+        return target.number
+          ? `${repo}|pullRequest|${target.remote ?? ""}|${target.number}`
+          : `${repo}|pullRequest|${target.url ?? ""}|${target.baseRef}|${target.headRef}`;
+    }
+  }
+
+  return `${repo}|legacy|${item.baseRef ?? ""}|${normalHistoryRef(item.headRef)}`;
+}
+
+function normalHistoryRef(value?: string | null) {
+  if (!value) {
+    return "";
+  }
+  const normalized = value.trim().toLowerCase();
+  if (
+    normalized === "worktree" ||
+    normalized === "working-tree" ||
+    normalized === "working tree"
+  ) {
+    return "WORKTREE";
+  }
+  return value;
+}
+
+function timestampValue(value: string) {
+  const timestamp = new Date(value).getTime();
+  return Number.isNaN(timestamp) ? 0 : timestamp;
 }
 
 export function nextViewedStatus(
@@ -223,6 +399,14 @@ function storageKey(sessionId: string) {
   return `review-desk.session.${sessionId}`;
 }
 
+function reviewSessionSnapshotKey(sessionId: string) {
+  return `${REVIEW_SESSION_SNAPSHOT_PREFIX}${sessionId}`;
+}
+
+function deleteReviewSessionSnapshot(sessionId: string) {
+  window.localStorage.removeItem(reviewSessionSnapshotKey(sessionId));
+}
+
 function readJson<T>(key: string, fallback: T): T {
   const value = window.localStorage.getItem(key);
   if (!value) {
@@ -243,4 +427,5 @@ function basename(path: string) {
 
 const RECENT_REPOS_KEY = "review-desk.recent-repos";
 const REVIEW_HISTORY_KEY = "review-desk.review-history";
+const REVIEW_SESSION_SNAPSHOT_PREFIX = "review-desk.review-session-snapshot.";
 const LAST_REPO_KEY = "review-desk.last-repo";
