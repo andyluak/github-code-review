@@ -3,26 +3,26 @@ import type { ChangeKind, ViewedStatus } from "@/types/review";
 export function statusTone(status: ViewedStatus) {
   switch (status) {
     case "reviewed":
-      return "border-[var(--rd-accent-border)] bg-[var(--rd-accent-soft)] text-[var(--rd-accent-strong)]";
+      return "border-[var(--rd-vermillion-line)] bg-[var(--rd-vermillion-bg)] text-[var(--rd-vermillion-2)]";
     case "viewed":
-      return "border-[var(--rd-sage-border)] bg-[var(--rd-sage-soft)] text-[var(--rd-sage)]";
+      return "border-[var(--rd-hair-2)] bg-[var(--rd-ink-3)] text-[var(--rd-cream-2)]";
     case "changedSinceReviewed":
     case "changedSinceViewed":
-      return "border-[var(--rd-clay-border)] bg-[var(--rd-clay-soft)] text-[var(--rd-clay)]";
+      return "border-[var(--rd-del-line)] bg-[var(--rd-del-bg)] text-[var(--rd-del)]";
     case "unseen":
-      return "border-[var(--rd-border)] bg-[var(--rd-bg-soft)] text-[var(--rd-faint)]";
+      return "border-[var(--rd-hair)] bg-transparent text-[var(--rd-graphite)]";
   }
 }
 
 export function changeTone(changeKind: ChangeKind) {
   switch (changeKind) {
     case "added":
-      return "text-[var(--rd-sage)]";
+      return "text-[var(--rd-add)]";
     case "deleted":
-      return "text-[var(--rd-clay)]";
+      return "text-[var(--rd-del)]";
     case "renamed":
-      return "text-[var(--rd-accent)]";
+      return "text-[var(--rd-vermillion-2)]";
     case "modified":
-      return "text-[var(--rd-muted)]";
+      return "text-[var(--rd-graphite)]";
   }
 }
