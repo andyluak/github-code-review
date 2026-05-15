@@ -2,7 +2,7 @@ import { memo, useDeferredValue, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Search } from "lucide-react";
 import { Input } from "@/components/ui/input";
-import { compactPath } from "@/lib/format";
+import { compactPath, pathParts } from "@/lib/format";
 import type {
   ReviewFile,
   ReviewSession,
@@ -170,6 +170,7 @@ const FileRow = memo(function FileRow({
   onSelectFile: (fileId: string) => void;
 }) {
   const { file, index } = record;
+  const displayPath = pathParts(file.path);
   const reviewed = status === "reviewed";
   const stale = status === "changedSinceReviewed" || status === "changedSinceViewed";
   const viewed = status === "viewed";
@@ -178,41 +179,50 @@ const FileRow = memo(function FileRow({
     <button
       type="button"
       onClick={() => onSelectFile(file.id)}
-      className="group block w-full px-5 py-[3px] text-left"
+      className="group block w-full px-5 py-1.5 text-left"
     >
-      <div className="flex min-w-0 items-baseline gap-3">
+      <div className="flex min-w-0 items-start gap-3">
         <span
           className={[
-            "shrink-0 font-mono text-[10px] tabular-nums",
+            "mt-0.5 shrink-0 font-mono text-[10px] tabular-nums",
             isActive ? "text-[var(--rd-vermillion-2)]" : "text-[var(--rd-pencil)]",
           ].join(" ")}
         >
           {String(index).padStart(2, "0")}
         </span>
-        <span
-          className={[
-            "min-w-0 flex-1 truncate font-mono text-[12px]",
-            isActive
-              ? "text-[var(--rd-cream)]"
-              : stale
-                ? "text-[var(--rd-del)]"
-                : reviewed
-                  ? "text-[var(--rd-pencil)] line-through decoration-from-font"
-                  : viewed
-                    ? "text-[var(--rd-cream)]"
-                    : "text-[var(--rd-cream-2)] group-hover:text-[var(--rd-cream)]",
-          ].join(" ")}
-          title={file.path}
-        >
-          {compactPath(file.path, 48)}
-        </span>
-      </div>
-
-      {isActive && showReason && file.reviewReason ? (
-        <div className="ml-7 mt-0.5 line-clamp-2 text-[11px] leading-snug text-[var(--rd-graphite)]">
-          {file.reviewReason}
+        <div className="min-w-0 flex-1">
+          <div
+            className={[
+              "truncate font-mono text-[12px]",
+              isActive
+                ? "text-[var(--rd-cream)]"
+                : stale
+                  ? "text-[var(--rd-del)]"
+                  : reviewed
+                    ? "text-[var(--rd-pencil)] line-through decoration-from-font"
+                    : viewed
+                      ? "text-[var(--rd-cream)]"
+                      : "text-[var(--rd-cream-2)] group-hover:text-[var(--rd-cream)]",
+            ].join(" ")}
+            title={file.path}
+          >
+            {displayPath.fileName}
+          </div>
+          {displayPath.directory ? (
+            <div
+              className="mt-0.5 truncate font-mono text-[10px] leading-4 text-[var(--rd-pencil)]"
+              title={file.path}
+            >
+              {compactPath(displayPath.directory, 72)}
+            </div>
+          ) : null}
+          {isActive && showReason && file.reviewReason ? (
+            <div className="mt-1 line-clamp-2 text-[11px] leading-snug text-[var(--rd-graphite)]">
+              {file.reviewReason}
+            </div>
+          ) : null}
         </div>
-      ) : null}
+      </div>
     </button>
   );
 });
@@ -399,7 +409,7 @@ function estimateQueueRowSize(row: QueueVirtualRow | undefined) {
   if (row.kind === "group") {
     return 34;
   }
-  return row.showReason && row.record.file.id ? 34 : 28;
+  return row.showReason && row.record.file.reviewReason ? 64 : 42;
 }
 
 function matchesStatus(status: ViewedStatus, filter: RailStatusFilter) {

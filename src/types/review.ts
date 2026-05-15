@@ -33,6 +33,28 @@ export type ActiveReviewSessionRequest = {
   repoPath: string;
 };
 
+export type SaveTextFileRequest = {
+  path: string;
+  contents: string;
+};
+
+export type OpenReviewFileRequest = {
+  repoPath: string;
+  filePath: string;
+};
+
+export type LoadReviewWorkspaceStateRequest = {
+  repoPath: string;
+  sessionId: string;
+  legacySessionIds?: string[];
+};
+
+export type SaveReviewWorkspaceStateRequest = {
+  repoPath: string;
+  sessionId: string;
+  state: ReviewWorkspaceState;
+};
+
 export type ActiveReviewSession = {
   repoRoot: string;
   manifestPath: string;
@@ -89,6 +111,7 @@ export type PullRequestSummary = {
 
 export type ReviewSession = {
   id: string;
+  legacySessionIds: string[];
   snapshotHash: string;
   target: ReviewTarget;
   repo: RepoSummary;

@@ -8,10 +8,12 @@ import {
   useRef,
   useState,
 } from "react";
-import { Bot, MessageSquare, NotebookPen, Send } from "lucide-react";
+import { save as saveFileDialog } from "@tauri-apps/plugin-dialog";
+import { Bot, Download, MessageSquare, NotebookPen, Send } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { compactPath } from "@/lib/format";
+import { saveTextFile } from "@/lib/review-session";
 import {
   collectLedger,
   countByKind,
@@ -21,6 +23,7 @@ import {
   type LedgerEntry,
   type LedgerFilter,
 } from "@/lib/ledger";
+import { MarkdownPreview } from "@/components/review/MarkdownView";
 import type {
   ReviewFile,
   ReviewSession,
@@ -33,6 +36,13 @@ type InspectorProps = {
   file: ReviewFile | null;
   fileState: SessionFileState | null;
   workspaceState: ReviewWorkspaceState;
+  jumpTarget: {
+    fileId: string;
+    diffPosition?: number;
+    expandSection?: "private" | "draft";
+    requestedAt: number;
+  } | null;
+  onScrollHandled: () => void;
   onJumpToNote: (target: {
     fileId: string;
     diffPosition?: number;
@@ -51,7 +61,10 @@ export function Inspector(props: InspectorProps) {
     fileState,
     onPatchFileState,
     onJumpToNote,
+    jumpTarget,
+    onScrollHandled,
   } = props;
+  const scrollViewportRef = useRef<HTMLDivElement | null>(null);
 
   const ledger = useMemo(
     () => collectLedger(session, workspaceState),
@@ -66,9 +79,32 @@ export function Inspector(props: InspectorProps) {
     [ledger],
   );
 
+  useEffect(() => {
+    scrollViewportRef.current?.scrollTo({ top: 0, left: 0, behavior: "auto" });
+  }, [file?.id]);
+
+  useEffect(() => {
+    if (!jumpTarget?.expandSection || !file || jumpTarget.fileId !== file.id) {
+      return;
+    }
+
+    const selector =
+      jumpTarget.expandSection === "private"
+        ? '[data-section="notes"]'
+        : '[data-section="reply"]';
+    const target = scrollViewportRef.current?.querySelector<HTMLElement>(selector);
+    if (!target) {
+      onScrollHandled();
+      return;
+    }
+
+    target.scrollIntoView({ block: "start", behavior: "auto" });
+    onScrollHandled();
+  }, [file, jumpTarget, onScrollHandled]);
+
   return (
     <aside className="flex h-full min-h-0 flex-col border-l border-[var(--rd-hair)] bg-[var(--rd-ink)]">
-      <ScrollArea className="min-h-0 flex-1">
+      <ScrollArea className="min-h-0 flex-1" viewportRef={scrollViewportRef}>
         <div className="px-4 pb-6 pt-5">
           {file ? (
             <>
@@ -289,8 +325,12 @@ function LedgerSection({
   const headingId = useId();
   const [filter, setFilter] = useState<LedgerFilter>("all");
   const [scope, setScope] = useState<"file" | "all">("file");
+  const [exportStatus, setExportStatus] = useState<
+    "idle" | "exported" | "empty" | "failed"
+  >("idle");
 
   const counts = useMemo(() => countByKind(ledger), [ledger]);
+  const privateEntries = useMemo(() => filterLedger(ledger, "private"), [ledger]);
   const scoped = useMemo(
     () => (scope === "file" ? ledger.filter((entry) => entry.fileId === currentFileId) : ledger),
     [ledger, scope, currentFileId],
@@ -300,6 +340,37 @@ function LedgerSection({
     () => groupLedgerByFile(session, filtered),
     [filtered, session],
   );
+
+  useEffect(() => {
+    if (exportStatus === "idle") {
+      return;
+    }
+    const timer = window.setTimeout(() => setExportStatus("idle"), 1600);
+    return () => window.clearTimeout(timer);
+  }, [exportStatus]);
+
+  async function exportPrivateNotes() {
+    const markdown = buildPrivateNotesExport(session, privateEntries);
+    if (!markdown) {
+      setExportStatus("empty");
+      return;
+    }
+
+    try {
+      const path = await saveFileDialog({
+        title: "Export private notes",
+        defaultPath: privateNotesFilename(session),
+        filters: [{ name: "Markdown", extensions: ["md"] }],
+      });
+      if (!path) {
+        return;
+      }
+      await saveTextFile({ path, contents: markdown });
+      setExportStatus("exported");
+    } catch {
+      setExportStatus("failed");
+    }
+  }
 
   return (
     <section aria-labelledby={headingId} data-section="ledger">
@@ -348,7 +419,28 @@ function LedgerSection({
             onClick={() => setFilter("review")}
           />
         </div>
+        <Button
+          type="button"
+          variant="ghost"
+          size="xs"
+          className="ml-auto h-6 rounded px-2 font-mono text-[10px] uppercase tracking-wider text-[var(--rd-graphite)] hover:bg-[var(--rd-ink-2)] hover:text-[var(--rd-cream)]"
+          disabled={privateEntries.length === 0}
+          onClick={exportPrivateNotes}
+          aria-label="Export private notes as markdown"
+        >
+          <Download className="size-3" />
+          Private .md
+        </Button>
       </div>
+      {exportStatus !== "idle" ? (
+        <div className="mb-2 font-mono text-[10px] text-[var(--rd-pencil)]" aria-live="polite">
+          {exportStatus === "exported"
+            ? "Private notes exported."
+            : exportStatus === "failed"
+              ? "Private notes export failed."
+              : "No private notes yet."}
+        </div>
+      ) : null}
 
       {groups.length === 0 ? (
         <div className="rounded-md border border-[var(--rd-hair)] bg-[var(--rd-ink-2)] p-3 rd-display-italic text-[12px] text-[var(--rd-graphite)]">
@@ -450,9 +542,9 @@ function LedgerCard({
           · {ledgerLineRangeLabel(entry)}
         </span>
       </div>
-      <p className="mt-1 line-clamp-2 text-[12px] leading-5 text-[var(--rd-cream-2)]">
+      <MarkdownPreview className="mt-1 block line-clamp-2">
         {entry.body}
-      </p>
+      </MarkdownPreview>
     </button>
   );
 }
@@ -589,9 +681,9 @@ const BasketFooter = memo(function BasketFooter({
                 <div className="font-mono text-[9px] uppercase tracking-[0.14em] text-[var(--rd-pencil)]">
                   {ledgerLineRangeLabel(entry)}
                 </div>
-                <p className="mt-0.5 line-clamp-2 text-[11px] leading-4 text-[var(--rd-graphite)]">
+                <MarkdownPreview className="mt-0.5 block line-clamp-2 text-[11px] leading-4 text-[var(--rd-graphite)]">
                   {entry.body}
-                </p>
+                </MarkdownPreview>
               </div>
             ))}
           </div>
@@ -615,3 +707,37 @@ const BasketFooter = memo(function BasketFooter({
     </div>
   );
 });
+
+function buildPrivateNotesExport(
+  session: ReviewSession,
+  privateEntries: LedgerEntry[],
+) {
+  const groups = groupLedgerByFile(session, privateEntries);
+  if (groups.length === 0) {
+    return "";
+  }
+
+  const lines = [
+    "# Private review notes",
+    "",
+    `Repository: ${session.repo.root}`,
+    `Target: ${session.target.label}`,
+    `Generated: ${new Date().toISOString()}`,
+    "",
+  ];
+
+  for (const group of groups) {
+    lines.push(`## ${group.file.path}`, "");
+    for (const entry of group.entries) {
+      lines.push(`### ${ledgerLineRangeLabel(entry)}`, "", entry.body.trim(), "");
+    }
+  }
+
+  return `${lines.join("\n").trimEnd()}\n`;
+}
+
+function privateNotesFilename(session: ReviewSession) {
+  const repoName = session.repo.root.split(/[\\/]/).filter(Boolean).pop() ?? "review";
+  const safeRepoName = repoName.replace(/[^a-z0-9._-]+/gi, "-").toLowerCase();
+  return `${safeRepoName}-private-notes.md`;
+}

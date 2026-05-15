@@ -10,21 +10,38 @@ Review Desk can load an agent-created review session from the CLI. Review Desk w
 
 The app renders the order exactly as provided. It validates paths against the selected diff, but it does not infer risk, groups, or review priority.
 
-## File Name
+## Storage
 
-The CLI writes session files near the repo:
-
-```txt
-.review-desk/sessions/pr-review.review-session.json
-```
-
-It also writes:
+The CLI stores active Review Desk session state in app-owned local storage, not in
+the reviewed repository. On macOS the default location is:
 
 ```txt
-.review-desk/active-session.json
+~/Library/Application Support/Review Desk/
 ```
 
-The desktop app checks this pointer and can load that manifest for the open repo.
+Each repo gets its own storage folder under:
+
+```txt
+repos/<repo-name>-<stable-hash>/
+```
+
+`review-desk session create` writes the manifest to that repo storage folder and
+updates both the repo-specific active pointer and the global latest-active
+pointer. The desktop app checks app storage first and still falls back to legacy
+repo-local pointers for old sessions.
+
+Reviewer progress and notes are stored beside the session data:
+
+```txt
+repos/<repo-name>-<stable-hash>/workspace-state/<session-id>.json
+```
+
+That workspace-state file owns viewed/reviewed status, private notes,
+publishable drafts, and inline comments. Browser `localStorage` is only used as
+a migration source for older app builds.
+
+`.review-desk/` inside a repo is legacy/export-only state. Use `--output` only
+when you explicitly want a portable manifest outside the default app storage.
 
 ## CLI
 
@@ -67,14 +84,54 @@ review-desk session create --repo . --target pr --pr 123 --stdin < /tmp/agent-re
 Activate an existing session:
 
 ```bash
-review-desk session activate .review-desk/sessions/pr-review.review-session.json
+review-desk session activate "/path/to/pr-review.review-session.json"
 ```
+
+Migrate an old repo-local session into app storage:
+
+```bash
+review-desk session migrate --repo . --remove-legacy
+```
+
+Inspect and edit the active review queue:
+
+```bash
+review-desk session files list --repo . --json
+review-desk session files add --repo . --path src/file.ts --group "Core logic" --reason "Review before UI callers"
+review-desk session files remove --repo . --path src/generated.ts --reason "Generated noise"
+review-desk session files move --repo . --path src/file.ts --before src/other.ts
+review-desk session files organize --repo . --path src/file.ts --group "Tests" --reason "Covers the regression"
+```
+
+Queue edits create a new active app-data manifest and copy the existing
+workspace-state to the new session id, so viewed/reviewed status, private notes,
+publishable drafts, and inline comments survive add/remove/reorder operations.
+
+Read active Review Desk notes and file progress:
+
+```bash
+review-desk notes list --repo . --json
+review-desk notes get --repo . --path src/file.ts --json
+```
+
+Write active Review Desk workspace state:
+
+```bash
+review-desk notes add --repo . --path src/file.ts --line 42 --body "Check this"
+review-desk notes private --repo . --path src/file.ts --body "Scratch note"
+review-desk notes draft --repo . --path src/file.ts --body "Publishable review text"
+review-desk notes status --repo . --path src/file.ts --status reviewed
+```
+
+`notes add` creates inline comments and defaults to private notes on the new
+side of the diff. Use `--visibility review` for publishable inline comments,
+`--side old` for removed lines, and `--stdin` for multi-line text.
 
 Backwards-compatible aliases still work:
 
 ```bash
 review-desk create-session --repo . --base main --head feature/my-pr
-review-desk activate .review-desk/sessions/pr-review.review-session.json
+review-desk activate "/path/to/pr-review.review-session.json"
 review-desk list --repo .
 ```
 
@@ -138,6 +195,8 @@ Supported targets:
 - Use absolute `repoRoot`.
 - Use `target` for the actual review target.
 - Use Git refs that exist locally. PR targets may use `gh` and `git fetch` to resolve the head ref.
+- Use `review-desk session files ...` to add, remove, reorder, or regroup files in an active session.
+- Use `review-desk notes ...` to read/write viewed status, private notes, publishable drafts, and inline comments.
 - Put every intentionally ordered file in `fileOrder`.
 - Preserve review workflow order, not alphabetical order.
 - Use short, concrete `reason` text. One sentence is enough.
@@ -150,6 +209,7 @@ Supported targets:
 
 - Files in `fileOrder` are shown first, grouped by the supplied `group`.
 - Diff files not listed by the agent are appended under `Not ordered by agent`.
+- Files in `excludedPaths` are removed from the active queue, while their workspace-state can remain available if re-added later.
 - `agentNotes` appear in the Inspector's `Agent context` section for that file.
 - Missing ordered files, missing note targets, and missing excluded paths are shown as import warnings.
-- Private notes and viewed/reviewed status remain local to Review Desk.
+- Private notes and viewed/reviewed status remain local to Review Desk app data.

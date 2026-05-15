@@ -3,7 +3,7 @@ use std::{
     collections::{hash_map::DefaultHasher, HashSet},
     env, fs,
     hash::{Hash, Hasher},
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     process::Command,
 };
 
@@ -64,10 +64,42 @@ pub struct ActiveReviewSessionRequest {
     repo_path: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveTextFileRequest {
+    path: String,
+    contents: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenReviewFileRequest {
+    repo_path: String,
+    file_path: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoadReviewWorkspaceStateRequest {
+    repo_path: String,
+    session_id: String,
+    #[serde(default)]
+    legacy_session_ids: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveReviewWorkspaceStateRequest {
+    repo_path: String,
+    session_id: String,
+    state: serde_json::Value,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReviewSession {
     id: String,
+    legacy_session_ids: Vec<String>,
     snapshot_hash: String,
     target: ReviewTarget,
     repo: RepoSummary,
@@ -484,6 +516,7 @@ fn create_review_session_inner(
 
     Ok(ReviewSession {
         id: session_id,
+        legacy_session_ids: Vec::new(),
         snapshot_hash,
         target: resolved_target.target,
         repo: RepoSummary {
@@ -527,6 +560,223 @@ pub fn import_review_session(request: ImportReviewSessionRequest) -> Result<Revi
     import_review_session_from_path(PathBuf::from(&request.manifest_path))
 }
 
+#[tauri::command]
+pub fn save_text_file(request: SaveTextFileRequest) -> Result<(), String> {
+    let path = PathBuf::from(&request.path);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "Failed to create export directory {}: {error}",
+                parent.display()
+            )
+        })?;
+    }
+    fs::write(&path, request.contents)
+        .map_err(|error| format!("Failed to write export {}: {error}", path.display()))
+}
+
+#[tauri::command]
+pub fn open_review_file(request: OpenReviewFileRequest) -> Result<(), String> {
+    let repo_root = repo_root(&request.repo_path)?;
+    let relative_path = safe_relative_review_path(&request.file_path)?;
+    let requested_path = repo_root.join(relative_path);
+    let canonical_repo = repo_root.canonicalize().map_err(|error| {
+        format!(
+            "Failed to resolve repository path {}: {error}",
+            repo_root.display()
+        )
+    })?;
+    let canonical_file = requested_path.canonicalize().map_err(|error| {
+        format!(
+            "Cannot open {} from the working tree: {error}",
+            requested_path.display()
+        )
+    })?;
+
+    if !canonical_file.starts_with(&canonical_repo) {
+        return Err(format!(
+            "Refusing to open path outside repository: {}",
+            request.file_path
+        ));
+    }
+
+    open_file_in_editor(&canonical_file).map_err(|error| {
+        format!(
+            "Failed to open {} in editor: {error}",
+            canonical_file.display()
+        )
+    })
+}
+
+fn open_file_in_editor(path: &Path) -> Result<(), String> {
+    let mut errors = Vec::new();
+
+    for editor in editor_open_targets() {
+        match editor.open(path) {
+            Ok(()) => return Ok(()),
+            Err(error) => errors.push(error),
+        }
+    }
+
+    tauri_plugin_opener::open_path(path, None::<&str>).map_err(|error| {
+        let editor_errors = if errors.is_empty() {
+            String::new()
+        } else {
+            format!(" Editor attempts failed: {}", errors.join("; "))
+        };
+        format!("system default open failed: {error}.{editor_errors}")
+    })
+}
+
+#[derive(Debug)]
+enum EditorOpenTarget {
+    Command(PathBuf),
+    #[cfg(target_os = "macos")]
+    MacApp(&'static str),
+}
+
+impl EditorOpenTarget {
+    fn open(&self, path: &Path) -> Result<(), String> {
+        match self {
+            Self::Command(command) => open_with_command(command, path),
+            #[cfg(target_os = "macos")]
+            Self::MacApp(application) => open_with_macos_application(application, path),
+        }
+    }
+}
+
+fn editor_open_targets() -> Vec<EditorOpenTarget> {
+    let mut targets = Vec::new();
+
+    if let Some(command) = non_empty_env_path("REVIEW_DESK_EDITOR") {
+        targets.push(EditorOpenTarget::Command(command));
+    }
+
+    #[cfg(target_os = "macos")]
+    targets.push(EditorOpenTarget::MacApp("Cursor"));
+
+    targets.extend(cursor_command_candidates().map(EditorOpenTarget::Command));
+
+    for variable in ["VISUAL", "EDITOR"] {
+        if let Some(command) = non_empty_env_path(variable) {
+            targets.push(EditorOpenTarget::Command(command));
+        }
+    }
+
+    targets
+}
+
+fn cursor_command_candidates() -> impl Iterator<Item = PathBuf> {
+    [
+        "/usr/local/bin/cursor",
+        "/opt/homebrew/bin/cursor",
+        "cursor",
+    ]
+    .into_iter()
+    .map(PathBuf::from)
+}
+
+fn non_empty_env_path(variable: &str) -> Option<PathBuf> {
+    let value = env::var_os(variable)?;
+    if value.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(value))
+}
+
+fn open_with_command(command: &Path, path: &Path) -> Result<(), String> {
+    let output = Command::new(command)
+        .arg(path)
+        .output()
+        .map_err(|error| format!("{} failed to start: {error}", command.display()))?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    Err(format!(
+        "{} exited with {}: {}",
+        command.display(),
+        output.status,
+        command_stderr(&output.stderr)
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn open_with_macos_application(application: &str, path: &Path) -> Result<(), String> {
+    let output = Command::new("open")
+        .arg("-a")
+        .arg(application)
+        .arg(path)
+        .output()
+        .map_err(|error| format!("open -a {application} failed to start: {error}"))?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    Err(format!(
+        "open -a {application} exited with {}: {}",
+        output.status,
+        command_stderr(&output.stderr)
+    ))
+}
+
+fn command_stderr(stderr: &[u8]) -> String {
+    let message = String::from_utf8_lossy(stderr).trim().to_string();
+    if message.is_empty() {
+        "no stderr".to_string()
+    } else {
+        message
+    }
+}
+
+#[tauri::command]
+pub fn load_review_workspace_state(
+    request: LoadReviewWorkspaceStateRequest,
+) -> Result<Option<serde_json::Value>, String> {
+    let repo_root = repo_root(&request.repo_path)?;
+    let current_path = review_workspace_state_path(&repo_root, &request.session_id)?;
+    let mut session_ids = vec![request.session_id.clone()];
+    session_ids.extend(request.legacy_session_ids);
+    session_ids.dedup();
+
+    for session_id in session_ids {
+        let state_path = review_workspace_state_path(&repo_root, &session_id)?;
+        if !state_path.exists() {
+            continue;
+        }
+
+        let state_content = fs::read_to_string(&state_path).map_err(|error| {
+            format!(
+                "Failed to read workspace state {}: {error}",
+                state_path.display()
+            )
+        })?;
+        let state = serde_json::from_str::<serde_json::Value>(&state_content).map_err(|error| {
+            format!(
+                "Failed to parse workspace state {}: {error}",
+                state_path.display()
+            )
+        })?;
+
+        if state_path != current_path && !current_path.exists() {
+            write_json_file(&current_path, &state)?;
+        }
+
+        return Ok(Some(state));
+    }
+
+    Ok(None)
+}
+
+#[tauri::command]
+pub fn save_review_workspace_state(request: SaveReviewWorkspaceStateRequest) -> Result<(), String> {
+    let repo_root = repo_root(&request.repo_path)?;
+    let state_path = review_workspace_state_path(&repo_root, &request.session_id)?;
+    write_json_file(&state_path, &request.state)
+}
+
 fn import_review_session_from_path(manifest_path: PathBuf) -> Result<ReviewSession, String> {
     let manifest_content = fs::read_to_string(&manifest_path).map_err(|error| {
         format!(
@@ -549,13 +799,14 @@ fn import_review_session_from_path(manifest_path: PathBuf) -> Result<ReviewSessi
         ));
     }
 
+    let manifest_identity = content_hash(&manifest_content);
     let mut session = create_review_session_inner(CreateReviewSessionRequest {
         repo_path: manifest.repo_root.clone(),
         base_ref: manifest.base_ref.clone(),
         head_ref: manifest.head_ref.clone(),
         target: manifest.target.clone(),
     })?;
-    apply_manifest_order(&mut session, manifest, &manifest_path);
+    apply_manifest_order(&mut session, manifest, &manifest_path, &manifest_identity);
     Ok(session)
 }
 
@@ -564,24 +815,9 @@ pub fn get_active_review_session(
     request: ActiveReviewSessionRequest,
 ) -> Result<Option<ActiveReviewSession>, String> {
     let repo_root = repo_root(&request.repo_path)?;
-    let pointer_path = active_review_session_path(&repo_root);
-    if !pointer_path.exists() {
+    let Some((_, pointer)) = active_review_session_pointer(&repo_root)? else {
         return Ok(None);
-    }
-
-    let pointer_content = fs::read_to_string(&pointer_path).map_err(|error| {
-        format!(
-            "Failed to read active review session {}: {error}",
-            pointer_path.display()
-        )
-    })?;
-    let pointer: ActiveReviewSessionPointer =
-        serde_json::from_str(&pointer_content).map_err(|error| {
-            format!(
-                "Failed to parse active review session {}: {error}",
-                pointer_path.display()
-            )
-        })?;
+    };
     let manifest_path = resolve_manifest_path(&repo_root, &pointer.manifest_path);
 
     if !manifest_path.exists() {
@@ -601,24 +837,9 @@ pub fn import_active_review_session(
     request: ActiveReviewSessionRequest,
 ) -> Result<Option<ReviewSession>, String> {
     let repo_root = repo_root(&request.repo_path)?;
-    let pointer_path = active_review_session_path(&repo_root);
-    if !pointer_path.exists() {
+    let Some((_, pointer)) = active_review_session_pointer(&repo_root)? else {
         return Ok(None);
-    }
-
-    let pointer_content = fs::read_to_string(&pointer_path).map_err(|error| {
-        format!(
-            "Failed to read active review session {}: {error}",
-            pointer_path.display()
-        )
-    })?;
-    let pointer: ActiveReviewSessionPointer =
-        serde_json::from_str(&pointer_content).map_err(|error| {
-            format!(
-                "Failed to parse active review session {}: {error}",
-                pointer_path.display()
-            )
-        })?;
+    };
     let manifest_path = resolve_manifest_path(&repo_root, &pointer.manifest_path);
     if !manifest_path.exists() {
         return Ok(None);
@@ -629,26 +850,9 @@ pub fn import_active_review_session(
 
 #[tauri::command]
 pub fn get_global_active_review_session() -> Result<Option<ActiveReviewSession>, String> {
-    let Some(pointer_path) = global_active_review_session_path() else {
+    let Some((_, pointer)) = global_active_review_session_pointer()? else {
         return Ok(None);
     };
-    if !pointer_path.exists() {
-        return Ok(None);
-    }
-
-    let pointer_content = fs::read_to_string(&pointer_path).map_err(|error| {
-        format!(
-            "Failed to read global active review session {}: {error}",
-            pointer_path.display()
-        )
-    })?;
-    let pointer: ActiveReviewSessionPointer =
-        serde_json::from_str(&pointer_content).map_err(|error| {
-            format!(
-                "Failed to parse global active review session {}: {error}",
-                pointer_path.display()
-            )
-        })?;
     let Some(repo_root_value) = pointer.repo_root.as_deref() else {
         return Ok(None);
     };
@@ -669,26 +873,9 @@ pub fn get_global_active_review_session() -> Result<Option<ActiveReviewSession>,
 
 #[tauri::command]
 pub fn import_global_active_review_session() -> Result<Option<ReviewSession>, String> {
-    let Some(pointer_path) = global_active_review_session_path() else {
+    let Some((_, pointer)) = global_active_review_session_pointer()? else {
         return Ok(None);
     };
-    if !pointer_path.exists() {
-        return Ok(None);
-    }
-
-    let pointer_content = fs::read_to_string(&pointer_path).map_err(|error| {
-        format!(
-            "Failed to read global active review session {}: {error}",
-            pointer_path.display()
-        )
-    })?;
-    let pointer: ActiveReviewSessionPointer =
-        serde_json::from_str(&pointer_content).map_err(|error| {
-            format!(
-                "Failed to parse global active review session {}: {error}",
-                pointer_path.display()
-            )
-        })?;
     let Some(repo_root_value) = pointer.repo_root.as_deref() else {
         return Ok(None);
     };
@@ -701,12 +888,167 @@ pub fn import_global_active_review_session() -> Result<Option<ReviewSession>, St
     import_review_session_from_path(manifest_path).map(Some)
 }
 
-fn active_review_session_path(repo_root: &Path) -> PathBuf {
+fn active_review_session_pointer(
+    repo_root: &Path,
+) -> Result<Option<(PathBuf, ActiveReviewSessionPointer)>, String> {
+    for pointer_path in active_review_session_paths(repo_root) {
+        if let Some(pointer) = read_active_pointer(&pointer_path, "active review session")? {
+            return Ok(Some((pointer_path, pointer)));
+        }
+    }
+    Ok(None)
+}
+
+fn global_active_review_session_pointer(
+) -> Result<Option<(PathBuf, ActiveReviewSessionPointer)>, String> {
+    for pointer_path in global_active_review_session_paths() {
+        if let Some(pointer) = read_active_pointer(&pointer_path, "global active review session")? {
+            return Ok(Some((pointer_path, pointer)));
+        }
+    }
+    Ok(None)
+}
+
+fn read_active_pointer(
+    pointer_path: &Path,
+    label: &str,
+) -> Result<Option<ActiveReviewSessionPointer>, String> {
+    if !pointer_path.exists() {
+        return Ok(None);
+    }
+
+    let pointer_content = fs::read_to_string(pointer_path)
+        .map_err(|error| format!("Failed to read {label} {}: {error}", pointer_path.display()))?;
+    serde_json::from_str(&pointer_content)
+        .map(Some)
+        .map_err(|error| {
+            format!(
+                "Failed to parse {label} {}: {error}",
+                pointer_path.display()
+            )
+        })
+}
+
+fn active_review_session_paths(repo_root: &Path) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Some(path) = app_active_review_session_path(repo_root) {
+        paths.push(path);
+    }
+    paths.push(legacy_active_review_session_path(repo_root));
+    paths
+}
+
+fn global_active_review_session_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Some(path) = app_global_active_review_session_path() {
+        paths.push(path);
+    }
+    if let Some(path) = legacy_global_active_review_session_path() {
+        paths.push(path);
+    }
+    paths
+}
+
+fn app_active_review_session_path(repo_root: &Path) -> Option<PathBuf> {
+    review_desk_data_dir().map(|data_dir| {
+        data_dir
+            .join("repos")
+            .join(repo_storage_key(repo_root))
+            .join("active-session.json")
+    })
+}
+
+fn app_global_active_review_session_path() -> Option<PathBuf> {
+    review_desk_data_dir().map(|data_dir| data_dir.join("active-session.json"))
+}
+
+fn review_workspace_state_path(repo_root: &Path, session_id: &str) -> Result<PathBuf, String> {
+    let session_file_name = workspace_state_file_name(session_id)?;
+    let Some(data_dir) = review_desk_data_dir() else {
+        return Err("Review Desk app data directory is unavailable".to_string());
+    };
+
+    Ok(data_dir
+        .join("repos")
+        .join(repo_storage_key(repo_root))
+        .join("workspace-state")
+        .join(session_file_name))
+}
+
+fn workspace_state_file_name(session_id: &str) -> Result<String, String> {
+    if session_id.is_empty()
+        || !session_id.chars().all(|character| {
+            character.is_ascii_alphanumeric() || character == '-' || character == '_'
+        })
+    {
+        return Err(format!("Invalid workspace state session id: {session_id}"));
+    }
+
+    Ok(format!("{session_id}.json"))
+}
+
+fn legacy_active_review_session_path(repo_root: &Path) -> PathBuf {
     repo_root.join(".review-desk").join("active-session.json")
 }
 
-fn global_active_review_session_path() -> Option<PathBuf> {
+fn legacy_global_active_review_session_path() -> Option<PathBuf> {
     env::var_os("HOME").map(|home| PathBuf::from(home).join(".review-desk/active-session.json"))
+}
+
+fn review_desk_data_dir() -> Option<PathBuf> {
+    if let Some(path) = env::var_os("REVIEW_DESK_DATA_DIR") {
+        return Some(PathBuf::from(path));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        return env::var_os("HOME").map(|home| {
+            PathBuf::from(home)
+                .join("Library")
+                .join("Application Support")
+                .join("Review Desk")
+        });
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(app_data) = env::var_os("APPDATA") {
+            return Some(PathBuf::from(app_data).join("Review Desk"));
+        }
+        return env::var_os("USERPROFILE").map(|home| {
+            PathBuf::from(home)
+                .join("AppData")
+                .join("Roaming")
+                .join("Review Desk")
+        });
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        if let Some(state_home) = env::var_os("XDG_STATE_HOME") {
+            return Some(PathBuf::from(state_home).join("review-desk"));
+        }
+        env::var_os("HOME").map(|home| {
+            PathBuf::from(home)
+                .join(".local")
+                .join("state")
+                .join("review-desk")
+        })
+    }
+}
+
+fn repo_storage_key(repo_root: &Path) -> String {
+    let repo_name = repo_root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(slug)
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "repo".to_string());
+    format!(
+        "{}-{:016x}",
+        repo_name,
+        fnv1a64(repo_root.display().to_string().as_bytes())
+    )
 }
 
 fn resolve_manifest_path(repo_root: &Path, manifest_path: &str) -> PathBuf {
@@ -722,6 +1064,7 @@ fn apply_manifest_order(
     session: &mut ReviewSession,
     manifest: ReviewSessionManifest,
     manifest_path: &Path,
+    manifest_identity: &str,
 ) {
     let mut warnings = Vec::new();
 
@@ -818,12 +1161,18 @@ fn apply_manifest_order(
     }
 
     session.files = ordered;
-    session.id = manifest_session_id(
+    let stable_session_id = manifest_session_id(
+        &session.repo.root,
+        session.patch_artifact.diff_target.as_str(),
+        manifest_identity,
+    );
+    session.legacy_session_ids = legacy_manifest_session_ids(
         &session.repo.root,
         session.patch_artifact.diff_target.as_str(),
         manifest_path,
-        &session.files,
+        &stable_session_id,
     );
+    session.id = stable_session_id;
     session.snapshot_hash = snapshot_hash(&session.id, &session.files, &session.excluded_files);
     session.patch_artifact.strategy = "agent-manifest".to_string();
     session.patch_artifact.file_count = session.files.len();
@@ -921,6 +1270,26 @@ pub fn list_review_refs(request: ListReviewRefsRequest) -> Result<RepoRefs, Stri
 fn repo_root(path: &str) -> Result<PathBuf, String> {
     let output = git_stdout(Path::new(path), &["rev-parse", "--show-toplevel"])?;
     Ok(PathBuf::from(output.trim()))
+}
+
+fn safe_relative_review_path(path: &str) -> Result<PathBuf, String> {
+    let mut relative_path = PathBuf::new();
+
+    for component in Path::new(path).components() {
+        match component {
+            Component::Normal(part) => relative_path.push(part),
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(format!("Invalid review file path: {path}"));
+            }
+        }
+    }
+
+    if relative_path.as_os_str().is_empty() {
+        return Err("Invalid empty review file path".to_string());
+    }
+
+    Ok(relative_path)
 }
 
 fn list_refs(repo_root: &Path, kind: GitRefKind) -> Result<Vec<GitRef>, String> {
@@ -1696,6 +2065,33 @@ fn file_id(path: &str) -> String {
     format!("file-{:x}", hasher.finish())
 }
 
+fn slug(value: &str) -> String {
+    let slug = value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    slug.trim_matches('-')
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
 fn session_id(repo_root: &Path, session_key: &str) -> String {
     let mut hasher = DefaultHasher::new();
     repo_root.display().to_string().hash(&mut hasher);
@@ -1721,12 +2117,42 @@ fn snapshot_hash(
     format!("snapshot-{:x}", hasher.finish())
 }
 
-fn manifest_session_id(
+fn manifest_session_id(repo_root: &str, diff_target: &str, manifest_identity: &str) -> String {
+    let mut hasher = DefaultHasher::new();
+    repo_root.hash(&mut hasher);
+    diff_target.hash(&mut hasher);
+    manifest_identity.hash(&mut hasher);
+    format!("agent-session-{:x}", hasher.finish())
+}
+
+fn legacy_manifest_session_ids(
     repo_root: &str,
     diff_target: &str,
     manifest_path: &Path,
-    _files: &[ReviewFile],
-) -> String {
+    current_session_id: &str,
+) -> Vec<String> {
+    let mut session_ids = Vec::new();
+    let path_id = path_manifest_session_id(repo_root, diff_target, manifest_path);
+    if path_id != current_session_id {
+        session_ids.push(path_id);
+    }
+
+    if let Some(file_name) = manifest_path.file_name() {
+        let legacy_manifest_path = PathBuf::from(repo_root)
+            .join(".review-desk")
+            .join("sessions")
+            .join(file_name);
+        let legacy_path_id =
+            path_manifest_session_id(repo_root, diff_target, &legacy_manifest_path);
+        if legacy_path_id != current_session_id && !session_ids.contains(&legacy_path_id) {
+            session_ids.push(legacy_path_id);
+        }
+    }
+
+    session_ids
+}
+
+fn path_manifest_session_id(repo_root: &str, diff_target: &str, manifest_path: &Path) -> String {
     let mut hasher = DefaultHasher::new();
     repo_root.hash(&mut hasher);
     diff_target.hash(&mut hasher);
@@ -1803,6 +2229,25 @@ fn command_stdout_with_args(
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
+fn write_json_file<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("Failed to create directory {}: {error}", parent.display()))?;
+    }
+
+    let contents = serde_json::to_string_pretty(value)
+        .map_err(|error| format!("Failed to serialize JSON for {}: {error}", path.display()))?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("workspace-state.json");
+    let temp_path = path.with_file_name(format!(".{file_name}.tmp"));
+    fs::write(&temp_path, format!("{contents}\n"))
+        .map_err(|error| format!("Failed to write {}: {error}", temp_path.display()))?;
+    fs::rename(&temp_path, path)
+        .map_err(|error| format!("Failed to move {} into place: {error}", path.display()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1817,6 +2262,25 @@ mod tests {
             parse_hunk_header("@@ -12,7 +14,9 @@ fn test"),
             (12, 7, 14, 9)
         );
+    }
+
+    #[test]
+    fn accepts_safe_review_file_paths() {
+        assert_eq!(
+            safe_relative_review_path("src/components/App.tsx").unwrap(),
+            PathBuf::from("src/components/App.tsx")
+        );
+        assert_eq!(
+            safe_relative_review_path("./README.md").unwrap(),
+            PathBuf::from("README.md")
+        );
+    }
+
+    #[test]
+    fn rejects_review_file_paths_outside_repo() {
+        assert!(safe_relative_review_path("../secret.txt").is_err());
+        assert!(safe_relative_review_path("/tmp/secret.txt").is_err());
+        assert!(safe_relative_review_path("").is_err());
     }
 
     #[test]
@@ -1857,6 +2321,14 @@ mod tests {
             Some(128)
         );
         assert_eq!(parse_pr_number("not-a-pr"), None);
+    }
+
+    #[test]
+    fn builds_stable_repo_storage_key() {
+        assert_eq!(
+            repo_storage_key(Path::new("/tmp/example")),
+            "example-fbb113d314e487d2"
+        );
     }
 
     #[test]
@@ -2035,6 +2507,73 @@ mod tests {
         assert!(!paths.contains(&"src/worktree.rs"));
 
         fs::remove_dir_all(repo).unwrap();
+    }
+
+    #[test]
+    fn keeps_agent_session_id_stable_when_manifest_moves() {
+        let repo = temp_repo();
+        fs::create_dir_all(repo.join(".review-desk/sessions")).unwrap();
+        fs::create_dir_all(repo.join("src")).unwrap();
+        fs::write(repo.join("README.md"), "initial\n").unwrap();
+        run_git(&repo, &["init"]);
+        run_git(&repo, &["config", "user.email", "review-desk@example.test"]);
+        run_git(&repo, &["config", "user.name", "Review Desk Test"]);
+        run_git(&repo, &["add", "README.md"]);
+        run_git(&repo, &["commit", "-m", "initial"]);
+
+        fs::write(repo.join("README.md"), "initial\nchanged\n").unwrap();
+
+        let legacy_manifest_path = repo
+            .join(".review-desk")
+            .join("sessions")
+            .join("review.review-session.json");
+        let app_manifest_path = temp_repo()
+            .join("sessions")
+            .join("review.review-session.json");
+        fs::create_dir_all(app_manifest_path.parent().unwrap()).unwrap();
+        let manifest_content = serde_json::to_string_pretty(&serde_json::json!({
+            "version": 1,
+            "repoRoot": repo.display().to_string(),
+            "target": {
+                "kind": "workingTree"
+            },
+            "title": "Review moved manifest",
+            "createdBy": "codex",
+            "fileOrder": [
+                {
+                    "path": "README.md",
+                    "group": "Entry points",
+                    "reason": "Review the readme change."
+                }
+            ]
+        }))
+        .unwrap();
+        fs::write(&legacy_manifest_path, &manifest_content).unwrap();
+        fs::write(&app_manifest_path, &manifest_content).unwrap();
+
+        let legacy_session = import_review_session(ImportReviewSessionRequest {
+            manifest_path: legacy_manifest_path.display().to_string(),
+        })
+        .unwrap();
+        let app_session = import_review_session(ImportReviewSessionRequest {
+            manifest_path: app_manifest_path.display().to_string(),
+        })
+        .unwrap();
+        let canonical_legacy_manifest_path = PathBuf::from(&app_session.repo.root)
+            .join(".review-desk")
+            .join("sessions")
+            .join("review.review-session.json");
+        let old_legacy_id = path_manifest_session_id(
+            &app_session.repo.root,
+            app_session.patch_artifact.diff_target.as_str(),
+            &canonical_legacy_manifest_path,
+        );
+
+        assert_eq!(legacy_session.id, app_session.id);
+        assert!(app_session.legacy_session_ids.contains(&old_legacy_id));
+
+        fs::remove_dir_all(repo).unwrap();
+        fs::remove_dir_all(app_manifest_path.parent().unwrap().parent().unwrap()).unwrap();
     }
 
     #[test]

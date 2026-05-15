@@ -1,6 +1,6 @@
 ---
 name: review-desk
-description: Use when the user wants to create, activate, inspect, or prepare a Review Desk code review session from a Git working tree, branch diff, commit, commit range, or pull request. Also use when an agent should order changed files, add per-file review rationale, or hand off a logical review queue to the Review Desk desktop app.
+description: Use when the user wants to create, activate, inspect, update, or prepare a Review Desk code review session from a Git working tree, branch diff, commit, commit range, or pull request. Also use when an agent should order changed files, add/remove/reorder review files, add per-file review rationale, extract/get/add Review Desk notes, update viewed/reviewed progress, or hand off a logical review queue to the Review Desk desktop app.
 ---
 
 # Review Desk
@@ -12,13 +12,19 @@ Use this skill when the user asks for phrases like:
 - "create a review session"
 - "open this PR/commit/range in Review Desk"
 - "order files for review"
+- "add/remove/reorder files in review"
 - "make an agent review session"
 - "prepare this diff for a reviewer"
+- "get/extract Review Desk notes"
+- "add a Review Desk note/comment"
+- "mark files viewed or reviewed"
 - "use Review Desk"
 
 ## Core Rule
 
-Use the first-class CLI. Do not make the user manage raw manifests unless they explicitly ask for one.
+Use the first-class CLI. Do not make the user manage raw manifests or
+workspace-state JSON unless they explicitly ask for it or the CLI is missing the
+needed operation.
 
 ```bash
 review-desk session create --repo . --target working-tree --agent codex
@@ -28,14 +34,41 @@ review-desk session create --repo . --target range --from main --to HEAD --agent
 review-desk session create --repo . --target pr --pr 123 --agent codex
 ```
 
-The CLI writes:
+The CLI writes active session state to Review Desk app data, not to the reviewed repo.
+On macOS this is under:
 
 ```txt
-.review-desk/sessions/*.review-session.json
-.review-desk/active-session.json
+~/Library/Application Support/Review Desk/
 ```
 
-The desktop app auto-loads the active session for the open repo.
+The desktop app auto-loads the active session for the open repo from app data.
+`.review-desk/` inside a repo is legacy/export-only state; do not create it unless
+the user explicitly asks for a portable manifest via `--output`.
+
+Reviewer progress and notes are app-data files too:
+
+```txt
+~/Library/Application Support/Review Desk/repos/<repo-key>/workspace-state/<session-id>.json
+```
+
+This file owns viewed/reviewed status, private notes, publishable drafts, and
+inline comments. Browser `localStorage` is only a legacy migration source.
+
+Agents should use the CLI for this state:
+
+```bash
+review-desk session files list --repo . --json
+review-desk session files add --repo . --path src/file.ts --group "Core logic" --reason "Review this before callers"
+review-desk session files remove --repo . --path src/generated.ts --reason "Generated noise"
+review-desk session files move --repo . --path src/file.ts --before src/other.ts
+review-desk session files organize --repo . --path src/file.ts --group "Tests" --reason "Verify behavior"
+review-desk notes list --repo . --json
+review-desk notes get --repo . --path src/file.ts --json
+review-desk notes add --repo . --path src/file.ts --line 42 --body "Check this"
+review-desk notes private --repo . --path src/file.ts --body "Scratch note"
+review-desk notes draft --repo . --path src/file.ts --body "Publishable review text"
+review-desk notes status --repo . --path src/file.ts --status reviewed
+```
 
 ## Workflow
 
@@ -104,6 +137,109 @@ The CLI adds repo/target metadata, validates changed paths through Review Desk, 
 
 Use local refs that exist. If a PR cannot resolve, inspect `gh pr view` / remotes and explain the missing local data.
 
+## Review Queue Editing
+
+Use `review-desk session files ...` to inspect or change the active review
+queue. These commands rewrite the active app-data manifest, activate the new
+manifest, and copy the old workspace-state to the new session id so private
+notes, inline comments, drafts, and viewed/reviewed status survive.
+
+Common commands:
+
+```bash
+# List ordered, unordered, and excluded files for the active session.
+review-desk session files list --repo . --json
+
+# Add a changed file to the ordered review queue, or re-include an excluded file.
+review-desk session files add --repo . --path src/file.ts --group "Core logic" --reason "Review before UI callers"
+
+# Place the file precisely.
+review-desk session files add --repo . --path src/file.ts --after src/entry.ts
+review-desk session files move --repo . --path src/file.ts --before src/other.ts
+review-desk session files move --repo . --path src/file.ts --index 3
+
+# Change group/reason without moving it.
+review-desk session files organize --repo . --path src/file.ts --group "Tests" --reason "Covers the regression"
+
+# Remove a file from the review queue.
+review-desk session files remove --repo . --path src/generated.ts --reason "Generated noise"
+```
+
+Only files in the active review target diff can be added. If a user asks to add
+a file outside the diff, explain that the review target must be recreated or
+changed first. Removing a file excludes it from the session but keeps existing
+workspace-state so notes can come back if it is re-added.
+
+## Review Notes
+
+Use `review-desk notes ...` for viewed/reviewed state, private notes,
+publishable drafts, and inline comments. It resolves the active app-data session
+for the repo, maps file paths to Review Desk file ids, and writes the correct
+workspace-state file.
+
+Common commands:
+
+```bash
+# Extract every touched file state and note for the active session.
+review-desk notes list --repo . --json
+
+# Read one file's state and notes.
+review-desk notes get --repo . --path src/file.ts --json
+
+# Add an inline private comment on the new side of the diff.
+review-desk notes add --repo . --path src/file.ts --line 42 --body "Question here"
+
+# Add a publishable review comment instead of a private note.
+review-desk notes add --repo . --path src/file.ts --line 42 --visibility review --body "Blocking issue here"
+
+# Add or replace file-level scratch/private notes or publishable drafts.
+review-desk notes private --repo . --path src/file.ts --body "Local scratchpad"
+review-desk notes draft --repo . --path src/file.ts --body "Ready to publish"
+
+# Preserve reviewer progress.
+review-desk notes status --repo . --path src/file.ts --status viewed
+review-desk notes status --repo . --path src/file.ts --status reviewed
+```
+
+Use `--stdin` instead of `--body` for multi-line note text. Use `--append` with
+`notes private` or `notes draft` when adding to existing file-level text. Inline
+comments default to `--side new` and `--visibility private`; pass `--side old`
+for removed lines. If a line cannot be mapped to the diff, use
+`--diff-position` only when you already know Review Desk's exact rendered diff
+position.
+
+The JSON shape returned by `notes list/get` is the stable agent contract:
+
+```json
+{
+  "repoRoot": "/repo",
+  "sessionId": "agent-session-...",
+  "workspaceStatePath": ".../workspace-state/agent-session-....json",
+  "notes": [
+    {
+      "fileId": "file-...",
+      "path": "src/file.ts",
+      "status": "reviewed",
+      "privateNote": "",
+      "publishableDraft": "",
+      "inlineComments": [
+        {
+          "path": "src/file.ts",
+          "startLine": 42,
+          "endLine": 42,
+          "body": "Question here",
+          "visibility": "private"
+        }
+      ]
+    }
+  ]
+}
+```
+
+Only edit `workspace-state/<session-id>.json` directly as a fallback. If you do,
+create/keep a top-level object keyed by Review Desk `fileId`, preserve existing
+fields, and write atomically.
+
 ## Validation
 
 After creating a session, prefer a lightweight check:
@@ -111,6 +247,26 @@ After creating a session, prefer a lightweight check:
 ```bash
 review-desk session list --repo .
 ```
+
+If an older session already exists under a repo-local `.review-desk/`, migrate it:
+
+```bash
+review-desk session migrate --repo . --remove-legacy
+```
+
+After changing notes, verify with:
+
+```bash
+review-desk notes list --repo . --json
+```
+
+After changing the queue, verify with:
+
+```bash
+review-desk session files list --repo . --json
+```
+
+Do not write review progress or notes into the reviewed repo.
 
 For code changes to Review Desk itself, run the repo checks:
 

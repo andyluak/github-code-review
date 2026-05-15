@@ -16,7 +16,11 @@ pub fn run() {
             review::import_active_review_session,
             review::import_global_active_review_session,
             review::import_review_session,
-            review::list_review_refs
+            review::list_review_refs,
+            review::load_review_workspace_state,
+            review::open_review_file,
+            review::save_review_workspace_state,
+            review::save_text_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -30,6 +30,7 @@ import {
   loadReviewHistory,
   loadReviewSessionSnapshot,
   loadWorkspaceState,
+  openReviewFile,
   rememberRepo,
   rememberReviewSession,
   reconcileWorkspaceState,
@@ -84,18 +85,22 @@ function App() {
   const [workspaceState, setWorkspaceState] = useState<ReviewWorkspaceState>(
     {},
   );
+  const [workspaceStateReadySessionId, setWorkspaceStateReadySessionId] =
+    useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isRefsLoading, setIsRefsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [jumpTarget, setJumpTarget] = useState<JumpTarget | null>(null);
   const refLoadId = useRef(0);
   const sessionLoadId = useRef(0);
+  const workspaceLoadId = useRef(0);
   const lastSeenActiveManifest = useRef<string | null>(null);
   const activeSessionPollRef = useRef(false);
   const sessionRef = useRef<ReviewSession | null>(null);
   const activeFileIdRef = useRef<string | null>(null);
-  const latestSessionIdRef = useRef<string | null>(null);
+  const latestSessionRef = useRef<ReviewSession | null>(null);
   const latestWorkspaceStateRef = useRef<ReviewWorkspaceState>({});
+  const workspaceStateReadySessionIdRef = useRef<string | null>(null);
 
   const fileById = useMemo(() => {
     return new Map(session?.files.map((file) => [file.id, file]) ?? []);
@@ -128,9 +133,13 @@ function App() {
   }, [activeFileId]);
 
   useEffect(() => {
-    latestSessionIdRef.current = session?.id ?? null;
+    latestSessionRef.current = session;
     latestWorkspaceStateRef.current = workspaceState;
-  }, [session?.id, workspaceState]);
+  }, [session, workspaceState]);
+
+  useEffect(() => {
+    workspaceStateReadySessionIdRef.current = workspaceStateReadySessionId;
+  }, [workspaceStateReadySessionId]);
 
   const patchFileState = useCallback(
     (fileId: string, patch: Partial<SessionFileState>) => {
@@ -193,6 +202,8 @@ function App() {
     const previousSession = sessionRef.current;
     const previousActiveFileId = activeFileIdRef.current;
     const sameSession = previousSession?.id === nextSession.id;
+    const workspaceRequestId = workspaceLoadId.current + 1;
+    workspaceLoadId.current = workspaceRequestId;
 
     setRepoPath(nextSession.repo.root);
     setBaseRef(nextSession.repo.baseRef ?? "");
@@ -205,11 +216,15 @@ function App() {
       setPullRequestNumber,
       setPullRequestInput,
     });
+    workspaceStateReadySessionIdRef.current = null;
+    setWorkspaceStateReadySessionId(null);
     setSession(nextSession);
+    sessionRef.current = nextSession;
     setWorkspaceState((current) => {
-      const saved = loadWorkspaceState(nextSession.id);
-      const baseState = sameSession ? { ...saved, ...current } : saved;
-      return reconcileWorkspaceState(nextSession, baseState);
+      if (sameSession) {
+        return reconcileWorkspaceState(nextSession, current);
+      }
+      return {};
     });
     setActiveFileId(
       chooseActiveFileId(nextSession, previousSession, previousActiveFileId),
@@ -219,6 +234,30 @@ function App() {
     if (nextSession.order.manifestPath) {
       lastSeenActiveManifest.current = nextSession.order.manifestPath;
     }
+
+    void loadWorkspaceState(nextSession)
+      .then((saved) => {
+        if (
+          workspaceLoadId.current !== workspaceRequestId ||
+          sessionRef.current?.id !== nextSession.id
+        ) {
+          return;
+        }
+
+        setWorkspaceState((current) => {
+          if (sameSession) {
+            return reconcileWorkspaceState(nextSession, { ...saved, ...current });
+          }
+          return reconcileWorkspaceState(nextSession, saved);
+        });
+        workspaceStateReadySessionIdRef.current = nextSession.id;
+        setWorkspaceStateReadySessionId(nextSession.id);
+      })
+      .catch((caught) => {
+        if (workspaceLoadId.current === workspaceRequestId) {
+          setError(caught instanceof Error ? caught.message : String(caught));
+        }
+      });
   }, []);
 
   const tryLoadActiveSession = useCallback(
@@ -786,6 +825,19 @@ function App() {
     });
   }, [activeFile, activeFileState?.status, patchFileState]);
 
+  const openActiveFile = useCallback(() => {
+    if (!session || !activeFile || activeFile.changeKind === "deleted") {
+      return;
+    }
+
+    void openReviewFile({
+      repoPath: session.repo.root,
+      filePath: activeFile.path,
+    }).catch((caught) => {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    });
+  }, [activeFile, session]);
+
   useEffect(() => {
     const lastRepoPath = loadLastRepoPath();
     if (lastRepoPath) {
@@ -835,7 +887,11 @@ function App() {
   }, [isLoading, repoPath, tryLoadActiveSession, tryLoadGlobalActiveSession]);
 
   useEffect(() => {
-    if (!session || !activeFile) {
+    if (
+      !session ||
+      !activeFile ||
+      workspaceStateReadySessionId !== session.id
+    ) {
       return;
     }
 
@@ -854,22 +910,27 @@ function App() {
         },
       };
     });
-  }, [activeFile, session]);
+  }, [activeFile, session, workspaceStateReadySessionId]);
 
   useEffect(() => {
-    if (session) {
+    if (session && workspaceStateReadySessionId === session.id) {
       const timer = window.setTimeout(() => {
-        saveWorkspaceState(session.id, workspaceState);
+        void saveWorkspaceState(session, workspaceState).catch((caught) => {
+          setError(caught instanceof Error ? caught.message : String(caught));
+        });
       }, 350);
       return () => window.clearTimeout(timer);
     }
-  }, [session, workspaceState]);
+  }, [session, workspaceState, workspaceStateReadySessionId]);
 
   useEffect(() => {
     function flushWorkspaceState() {
-      if (latestSessionIdRef.current) {
-        saveWorkspaceState(
-          latestSessionIdRef.current,
+      if (
+        latestSessionRef.current &&
+        workspaceStateReadySessionIdRef.current === latestSessionRef.current.id
+      ) {
+        void saveWorkspaceState(
+          latestSessionRef.current,
           latestWorkspaceStateRef.current,
         );
       }
@@ -975,6 +1036,7 @@ function App() {
                 onScrollHandled={handleScrollHandled}
                 onMarkViewed={markActiveViewed}
                 onMarkReviewed={markActiveReviewed}
+                onOpenFile={openActiveFile}
                 onSaveInlineComment={saveInlineComment}
                 onDeleteInlineComment={deleteInlineComment}
               />
@@ -986,6 +1048,8 @@ function App() {
                 file={activeFile}
                 fileState={activeFileState}
                 workspaceState={workspaceState}
+                jumpTarget={jumpTarget}
+                onScrollHandled={handleScrollHandled}
                 onJumpToNote={jumpToNote}
                 onPatchFileState={patchFileState}
                 onMarkViewed={markActiveViewed}

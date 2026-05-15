@@ -15,6 +15,7 @@ import {
   Columns2,
   Copy,
   Eye,
+  ExternalLink,
   FileDiff,
   MessageSquare,
   NotebookPen,
@@ -27,8 +28,9 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useDiffViewMode, type DiffViewMode } from "@/hooks/use-diff-view-mode";
-import { compactPath } from "@/lib/format";
+import { compactPath, pathParts } from "@/lib/format";
 import { highlightCodeLine } from "@/lib/syntax-highlight";
+import { MarkdownView } from "@/components/review/MarkdownView";
 import type {
   DiffLine,
   InlineComment,
@@ -52,6 +54,7 @@ type DiffCanvasProps = {
   onScrollHandled: () => void;
   onMarkViewed: () => void;
   onMarkReviewed: () => void;
+  onOpenFile: () => void;
   onSaveInlineComment: (fileId: string, comment: InlineComment) => void;
   onDeleteInlineComment: (fileId: string, commentId: string) => void;
 };
@@ -90,23 +93,43 @@ export const DiffCanvas = memo(function DiffCanvas({
   onScrollHandled,
   onMarkViewed,
   onMarkReviewed,
+  onOpenFile,
   onSaveInlineComment,
   onDeleteInlineComment,
 }: DiffCanvasProps) {
   const [viewMode, setViewMode] = useDiffViewMode();
   const [draftTarget, setDraftTarget] = useState<CommentTarget | null>(null);
+  const [isLineSelectionDragging, setIsLineSelectionDragging] = useState(false);
   const diffContainerRef = useRef<HTMLDivElement | null>(null);
+  const scrollViewportRef = useRef<HTMLDivElement | null>(null);
+  const lineSelectionDragRef = useRef(false);
 
   useEffect(() => {
     setDraftTarget(null);
+    setIsLineSelectionDragging(false);
+    lineSelectionDragRef.current = false;
+    scrollViewportRef.current?.scrollTo({ top: 0, left: 0, behavior: "auto" });
   }, [file?.id]);
+
+  useEffect(() => {
+    function stopDragSelection() {
+      lineSelectionDragRef.current = false;
+      setIsLineSelectionDragging(false);
+    }
+
+    window.addEventListener("pointerup", stopDragSelection);
+    window.addEventListener("pointercancel", stopDragSelection);
+    return () => {
+      window.removeEventListener("pointerup", stopDragSelection);
+      window.removeEventListener("pointercancel", stopDragSelection);
+    };
+  }, []);
 
   useEffect(() => {
     if (!jumpTarget || !file || jumpTarget.fileId !== file.id) {
       return;
     }
     if (jumpTarget.diffPosition === undefined) {
-      onScrollHandled();
       return;
     }
     const container = diffContainerRef.current;
@@ -163,6 +186,31 @@ export const DiffCanvas = memo(function DiffCanvas({
     });
   }
 
+  function beginInlineSelection(anchor: LineAnchor, extendSelection: boolean) {
+    if (extendSelection) {
+      openInlineComposer(anchor, true);
+      return;
+    }
+    lineSelectionDragRef.current = true;
+    setIsLineSelectionDragging(true);
+    setDraftTarget(targetFromAnchor(anchor));
+  }
+
+  function extendInlineSelection(anchor: LineAnchor) {
+    if (!lineSelectionDragRef.current) {
+      return;
+    }
+    setDraftTarget((current) => {
+      if (!current) {
+        return targetFromAnchor(anchor);
+      }
+      if (current.side !== anchor.side) {
+        return current;
+      }
+      return extendTarget(current, anchor);
+    });
+  }
+
   const saveDraftComment = useCallback((draftBody: string, draftVisibility: InlineCommentVisibility) => {
     const body = draftBody.trim();
     if (!file || !draftTarget || !body) {
@@ -206,6 +254,7 @@ export const DiffCanvas = memo(function DiffCanvas({
   const isReviewed = status === "reviewed";
   const viewedLabel = status === "viewed" ? "Unview" : "Mark Viewed";
   const reviewedLabel = isReviewed ? "Undo Review" : "Mark Reviewed";
+  const displayPath = pathParts(file.path);
 
   return (
     <section className="flex h-full min-h-0 flex-col bg-[var(--rd-ink)]">
@@ -213,13 +262,18 @@ export const DiffCanvas = memo(function DiffCanvas({
         <div className="min-w-0">
           <div className="flex items-baseline gap-2">
             <h2 className="truncate font-mono text-[12px] font-medium text-[var(--rd-cream)]">
-              {compactPath(file.path, 92)}
+              {displayPath.fileName}
             </h2>
             <span className="rd-display-italic text-[11px] text-[var(--rd-pencil)]">
               {file.changeKind}
             </span>
           </div>
           <div className="mt-0.5 flex items-center gap-3 font-mono text-[10px] text-[var(--rd-pencil)]">
+            {displayPath.directory ? (
+              <span className="min-w-0 truncate" title={file.path}>
+                {compactPath(displayPath.directory, 76)}
+              </span>
+            ) : null}
             <span className="text-[var(--rd-add)]">+{file.additions}</span>
             <span className="text-[var(--rd-del)]">−{file.deletions}</span>
             {file.oldPath ? <span>← {compactPath(file.oldPath, 56)}</span> : null}
@@ -227,6 +281,26 @@ export const DiffCanvas = memo(function DiffCanvas({
         </div>
 
         <div className="flex items-center gap-1.5">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                className="size-7 text-[var(--rd-graphite)] hover:bg-[var(--rd-ink-3)] hover:text-[var(--rd-cream)]"
+                disabled={file.changeKind === "deleted"}
+                onClick={onOpenFile}
+                aria-label="Open file in editor"
+              >
+                <ExternalLink className="size-3.5" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>
+              {file.changeKind === "deleted"
+                ? "Deleted file has no working-tree path"
+                : "Open file in editor"}
+            </TooltipContent>
+          </Tooltip>
           <ViewModeToggle mode={viewMode} disabled={isOneSided} onChange={setViewMode} />
           <span className="h-4 w-px bg-[var(--rd-hair-2)]" aria-hidden />
           <Button
@@ -255,7 +329,7 @@ export const DiffCanvas = memo(function DiffCanvas({
         </div>
       </div>
 
-      <ScrollArea className="min-h-0 flex-1">
+      <ScrollArea className="min-h-0 flex-1" viewportRef={scrollViewportRef}>
         <div className="min-w-0 px-4 py-4" ref={diffContainerRef}>
           <div className="overflow-hidden rounded-md bg-[var(--rd-ink-2)]">
             {file.hunks.map((hunk, hunkIndex) => (
@@ -282,8 +356,11 @@ export const DiffCanvas = memo(function DiffCanvas({
                               isTargetSelected(draftTarget, position),
                             )}
                             onAddComment={openInlineComposer}
+                            onBeginSelection={beginInlineSelection}
+                            onExtendSelection={extendInlineSelection}
                           />
                           {draftTarget &&
+                          !isLineSelectionDragging &&
                           positions.includes(draftTarget.endDiffPosition) ? (
                             <InlineCommentComposer
                               target={draftTarget}
@@ -321,8 +398,11 @@ export const DiffCanvas = memo(function DiffCanvas({
                             changeKind={file.changeKind}
                             selected={isTargetSelected(draftTarget, anchor.diffPosition)}
                             onAddComment={openInlineComposer}
+                            onBeginSelection={beginInlineSelection}
+                            onExtendSelection={extendInlineSelection}
                           />
-                          {draftTarget?.endDiffPosition === anchor.diffPosition ? (
+                          {draftTarget?.endDiffPosition === anchor.diffPosition &&
+                          !isLineSelectionDragging ? (
                             <InlineCommentComposer
                               target={draftTarget}
                               onSave={saveDraftComment}
@@ -362,6 +442,7 @@ function areDiffCanvasPropsEqual(
     previous.onScrollHandled === next.onScrollHandled &&
     previous.onMarkViewed === next.onMarkViewed &&
     previous.onMarkReviewed === next.onMarkReviewed &&
+    previous.onOpenFile === next.onOpenFile &&
     previous.onSaveInlineComment === next.onSaveInlineComment &&
     previous.onDeleteInlineComment === next.onDeleteInlineComment
   );
@@ -458,10 +539,14 @@ const SplitRow = memo(function SplitRow({
   row,
   selected,
   onAddComment,
+  onBeginSelection,
+  onExtendSelection,
 }: {
   row: SplitDisplayRow;
   selected: boolean;
   onAddComment: (anchor: LineAnchor, extendSelection: boolean) => void;
+  onBeginSelection: (anchor: LineAnchor, extendSelection: boolean) => void;
+  onExtendSelection: (anchor: LineAnchor) => void;
 }) {
   const oldHot = row.old?.line.kind === "deletion";
   const newHot = row.new?.line.kind === "addition";
@@ -485,6 +570,10 @@ const SplitRow = memo(function SplitRow({
         onAddComment={
           row.old ? (extend) => onAddComment(row.old!.anchor, extend) : undefined
         }
+        onBeginSelection={
+          row.old ? (extend) => onBeginSelection(row.old!.anchor, extend) : undefined
+        }
+        onExtendSelection={row.old ? () => onExtendSelection(row.old!.anchor) : undefined}
       >
         {row.old?.line.content ?? ""}
       </CodeCell>
@@ -498,6 +587,10 @@ const SplitRow = memo(function SplitRow({
         onAddComment={
           row.new ? (extend) => onAddComment(row.new!.anchor, extend) : undefined
         }
+        onBeginSelection={
+          row.new ? (extend) => onBeginSelection(row.new!.anchor, extend) : undefined
+        }
+        onExtendSelection={row.new ? () => onExtendSelection(row.new!.anchor) : undefined}
       >
         {row.new?.line.content ?? ""}
       </CodeCell>
@@ -511,12 +604,16 @@ const UnifiedRow = memo(function UnifiedRow({
   changeKind,
   selected,
   onAddComment,
+  onBeginSelection,
+  onExtendSelection,
 }: {
   line: DiffLine;
   anchor: LineAnchor;
   changeKind: ReviewFile["changeKind"];
   selected: boolean;
   onAddComment: (anchor: LineAnchor, extendSelection: boolean) => void;
+  onBeginSelection: (anchor: LineAnchor, extendSelection: boolean) => void;
+  onExtendSelection: (anchor: LineAnchor) => void;
 }) {
   const isAddition = line.kind === "addition";
   const isDeletion = line.kind === "deletion";
@@ -546,6 +643,8 @@ const UnifiedRow = memo(function UnifiedRow({
         marker={marker}
         tone={isAddition ? "add" : isDeletion ? "del" : "neutral"}
         onAddComment={(extend) => onAddComment(lineAnchor, extend)}
+        onBeginSelection={(extend) => onBeginSelection(lineAnchor, extend)}
+        onExtendSelection={() => onExtendSelection(lineAnchor)}
       >
         {line.content}
       </CodeCell>
@@ -565,6 +664,7 @@ function InlineCommentComposer({
   const [body, setBody] = useState("");
   const [visibility, setVisibility] =
     useState<InlineCommentVisibility>("review");
+  const canSave = body.trim().length > 0;
 
   return (
     <div className="border-l-[3px] border-[var(--rd-vermillion-line)] bg-[var(--rd-ink-3)] px-4 py-3">
@@ -585,7 +685,17 @@ function InlineCommentComposer({
       <Textarea
         value={body}
         onChange={(event) => setBody(event.currentTarget.value)}
+        onKeyDown={(event) => {
+          if (event.key !== "Enter" || !event.shiftKey || event.nativeEvent.isComposing) {
+            return;
+          }
+          event.preventDefault();
+          if (canSave) {
+            onSave(body, visibility);
+          }
+        }}
         autoFocus
+        aria-label="Inline comment body. Markdown supported. Shift Enter adds the comment."
         placeholder="Write a comment for this line."
         className="min-h-24 resize-y border-[var(--rd-hair)] bg-[var(--rd-ink-2)] text-[13px] text-[var(--rd-cream)] placeholder:text-[var(--rd-pencil)]"
       />
@@ -609,7 +719,7 @@ function InlineCommentComposer({
           type="button"
           size="xs"
           className="h-7 rounded-md bg-[var(--rd-cream)] px-3 text-[11px] text-[var(--rd-ink)] hover:bg-white"
-          disabled={!body.trim()}
+          disabled={!canSave}
           onClick={() => onSave(body, visibility)}
         >
           Add comment
@@ -643,9 +753,9 @@ const InlineCommentCard = memo(function InlineCommentCard({
               {lineRangeLabel(comment)}
             </span>
           </div>
-          <p className="mt-1.5 whitespace-pre-wrap text-[12px] leading-5 text-[var(--rd-cream-2)]">
+          <MarkdownView className="mt-1.5" compact>
             {comment.body}
-          </p>
+          </MarkdownView>
         </div>
         <button
           type="button"
@@ -719,6 +829,8 @@ const CodeCell = memo(function CodeCell({
   tone,
   counterpart,
   onAddComment,
+  onBeginSelection,
+  onExtendSelection,
 }: {
   children: string;
   muted: boolean;
@@ -727,6 +839,8 @@ const CodeCell = memo(function CodeCell({
   tone: "add" | "del" | "neutral";
   counterpart?: string;
   onAddComment?: (extendSelection: boolean) => void;
+  onBeginSelection?: (extendSelection: boolean) => void;
+  onExtendSelection?: () => void;
 }) {
   const canComment = Boolean(children && onAddComment);
   const canCopy = children.length > 0;
@@ -757,6 +871,12 @@ const CodeCell = memo(function CodeCell({
 
   return (
     <div
+      onPointerEnter={(event) => {
+        if (!canComment || event.buttons !== 1) {
+          return;
+        }
+        onExtendSelection?.();
+      }}
       className={[
         "group/cell relative grid min-w-0 grid-cols-[28px_minmax(0,1fr)]",
         tone === "add" ? "bg-[var(--rd-add-bg)]" : "",
@@ -774,10 +894,27 @@ const CodeCell = memo(function CodeCell({
             : "cursor-default",
         ].join(" ")}
         disabled={!canComment}
-        onClick={(event) => onAddComment?.(event.shiftKey)}
+        onPointerDown={(event) => {
+          if (!canComment || event.button !== 0) {
+            return;
+          }
+          event.preventDefault();
+          onBeginSelection?.(event.shiftKey);
+        }}
+        onPointerEnter={(event) => {
+          if (!canComment || event.buttons !== 1) {
+            return;
+          }
+          onExtendSelection?.();
+        }}
+        onClick={(event) => {
+          if (event.detail === 0) {
+            onAddComment?.(event.shiftKey);
+          }
+        }}
         title={
           canComment
-            ? "Add line comment. Shift-click another line to select a range."
+            ? "Add line comment. Drag to select a range."
             : undefined
         }
         aria-label="Add line comment"

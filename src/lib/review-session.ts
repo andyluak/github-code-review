@@ -4,12 +4,16 @@ import type {
   ActiveReviewSessionRequest,
   CreateReviewSessionRequest,
   ImportReviewSessionRequest,
+  LoadReviewWorkspaceStateRequest,
   ListReviewRefsRequest,
+  OpenReviewFileRequest,
   RecentRepo,
   RepoRefs,
   ReviewHistoryItem,
   ReviewSession,
   ReviewWorkspaceState,
+  SaveReviewWorkspaceStateRequest,
+  SaveTextFileRequest,
   SessionFileState,
   ViewedStatus,
 } from "@/types/review";
@@ -56,6 +60,18 @@ export async function listReviewRefs(
   return invoke<RepoRefs>("list_review_refs", { request });
 }
 
+export async function saveTextFile(
+  request: SaveTextFileRequest,
+): Promise<void> {
+  return invoke<void>("save_text_file", { request });
+}
+
+export async function openReviewFile(
+  request: OpenReviewFileRequest,
+): Promise<void> {
+  return invoke<void>("open_review_file", { request });
+}
+
 export function createDefaultFileState(): SessionFileState {
   return {
     status: "unseen",
@@ -66,24 +82,58 @@ export function createDefaultFileState(): SessionFileState {
   };
 }
 
-export function loadWorkspaceState(sessionId: string): ReviewWorkspaceState {
-  const value = window.localStorage.getItem(storageKey(sessionId));
-  if (!value) {
-    return {};
+export async function loadWorkspaceState(
+  session: ReviewSession,
+): Promise<ReviewWorkspaceState> {
+  const request: LoadReviewWorkspaceStateRequest = {
+    repoPath: session.repo.root,
+    sessionId: session.id,
+    legacySessionIds: session.legacySessionIds,
+  };
+  const appState = await invoke<ReviewWorkspaceState | null>(
+    "load_review_workspace_state",
+    { request },
+  );
+  const legacyState = loadLegacyWorkspaceState(session);
+  const mergedState = mergeWorkspaceStates(appState ?? {}, legacyState);
+
+  if (
+    hasWorkspaceState(mergedState) &&
+    JSON.stringify(mergedState) !== JSON.stringify(appState ?? {})
+  ) {
+    await saveWorkspaceState(session, mergedState);
   }
 
-  try {
-    return JSON.parse(value) as ReviewWorkspaceState;
-  } catch {
-    return {};
-  }
+  return mergedState;
 }
 
-export function saveWorkspaceState(
-  sessionId: string,
+export function loadLegacyWorkspaceState(session: ReviewSession): ReviewWorkspaceState {
+  for (const sessionId of workspaceStateSessionIds(session)) {
+    const value = window.localStorage.getItem(storageKey(sessionId));
+    if (!value) {
+      continue;
+    }
+
+    try {
+      return JSON.parse(value) as ReviewWorkspaceState;
+    } catch {
+      continue;
+    }
+  }
+
+  return {};
+}
+
+export async function saveWorkspaceState(
+  session: ReviewSession,
   state: ReviewWorkspaceState,
-) {
-  window.localStorage.setItem(storageKey(sessionId), JSON.stringify(state));
+): Promise<void> {
+  const request: SaveReviewWorkspaceStateRequest = {
+    repoPath: session.repo.root,
+    sessionId: session.id,
+    state,
+  };
+  await invoke<void>("save_review_workspace_state", { request });
 }
 
 export function loadRecentRepos(): RecentRepo[] {
@@ -393,6 +443,92 @@ export function reconcileWorkspaceState(
   }
 
   return next;
+}
+
+function mergeWorkspaceStates(
+  current: ReviewWorkspaceState,
+  recovered: ReviewWorkspaceState,
+): ReviewWorkspaceState {
+  const next: ReviewWorkspaceState = { ...current };
+
+  for (const fileId of new Set([...Object.keys(current), ...Object.keys(recovered)])) {
+    next[fileId] = mergeFileState(current[fileId], recovered[fileId]);
+  }
+
+  return next;
+}
+
+function mergeFileState(
+  current: SessionFileState | undefined,
+  recovered: SessionFileState | undefined,
+): SessionFileState {
+  const currentState = {
+    ...createDefaultFileState(),
+    ...current,
+  };
+  const recoveredState = {
+    ...createDefaultFileState(),
+    ...recovered,
+  };
+
+  return {
+    ...currentState,
+    status:
+      viewedStatusRank(recoveredState.status) > viewedStatusRank(currentState.status)
+        ? recoveredState.status
+        : currentState.status,
+    lastPatchHash: currentState.lastPatchHash ?? recoveredState.lastPatchHash,
+    privateNote: currentState.privateNote?.trim()
+      ? currentState.privateNote
+      : (recoveredState.privateNote ?? ""),
+    publishableDraft: currentState.publishableDraft?.trim()
+      ? currentState.publishableDraft
+      : (recoveredState.publishableDraft ?? ""),
+    inlineComments: mergeInlineComments(
+      currentState.inlineComments ?? [],
+      recoveredState.inlineComments ?? [],
+    ),
+  };
+}
+
+function viewedStatusRank(status: ViewedStatus | undefined) {
+  switch (status) {
+    case "reviewed":
+      return 4;
+    case "changedSinceReviewed":
+      return 3;
+    case "viewed":
+      return 2;
+    case "changedSinceViewed":
+      return 1;
+    case "unseen":
+    default:
+      return 0;
+  }
+}
+
+function mergeInlineComments(
+  current: SessionFileState["inlineComments"],
+  recovered: SessionFileState["inlineComments"],
+) {
+  const byId = new Map<string, SessionFileState["inlineComments"][number]>();
+
+  for (const comment of [...current, ...recovered]) {
+    const existing = byId.get(comment.id);
+    if (!existing || timestampValue(comment.updatedAt) >= timestampValue(existing.updatedAt)) {
+      byId.set(comment.id, comment);
+    }
+  }
+
+  return [...byId.values()];
+}
+
+function workspaceStateSessionIds(session: ReviewSession) {
+  return [session.id, ...(session.legacySessionIds ?? [])];
+}
+
+function hasWorkspaceState(state: ReviewWorkspaceState) {
+  return Object.keys(state).length > 0;
 }
 
 function storageKey(sessionId: string) {
