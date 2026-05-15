@@ -1,0 +1,204 @@
+export type CreateReviewSessionRequest = {
+  repoPath: string;
+  baseRef?: string | null;
+  headRef?: string | null;
+};
+
+export type ListReviewRefsRequest = {
+  repoPath: string;
+};
+
+export type ImportReviewSessionRequest = {
+  manifestPath: string;
+};
+
+export type ActiveReviewSessionRequest = {
+  repoPath: string;
+};
+
+export type ActiveReviewSession = {
+  repoRoot: string;
+  manifestPath: string;
+  activatedAt?: string | null;
+  source?: string | null;
+};
+
+export type RepoRefs = {
+  requestedPath: string;
+  root: string;
+  currentBranch: string;
+  headSha: string;
+  refs: GitRef[];
+};
+
+export type GitRef = {
+  name: string;
+  kind: GitRefKind;
+  shortSha: string;
+  isHead: boolean;
+  upstream?: string | null;
+};
+
+export type GitRefKind = "local" | "remote";
+
+export type ReviewSession = {
+  id: string;
+  repo: RepoSummary;
+  summary: SessionSummary;
+  files: ReviewFile[];
+  excludedFiles: ExcludedFile[];
+  patchArtifact: PatchArtifact;
+  order: ReviewOrder;
+};
+
+export type RepoSummary = {
+  requestedPath: string;
+  root: string;
+  branch: string;
+  headSha: string;
+  baseRef?: string | null;
+  headRef?: string | null;
+};
+
+export type SessionSummary = {
+  totalFiles: number;
+  includedFiles: number;
+  excludedFiles: number;
+  additions: number;
+  deletions: number;
+  generatedExcluded: number;
+};
+
+export type ReviewFile = {
+  id: string;
+  path: string;
+  oldPath?: string | null;
+  changeKind: ChangeKind;
+  additions: number;
+  deletions: number;
+  viewedStatus: ViewedStatus;
+  orderGroup?: string | null;
+  reviewReason?: string | null;
+  agentNotes: AgentNote[];
+  hunks: DiffHunk[];
+};
+
+export type AgentNote = {
+  body: string;
+  source?: string | null;
+};
+
+export type ReviewOrder = {
+  source: ReviewOrderSource;
+  title?: string | null;
+  createdBy?: string | null;
+  manifestPath?: string | null;
+  groups: ReviewOrderGroup[];
+  warnings: ReviewOrderWarning[];
+};
+
+export type ReviewOrderSource = "git" | "agent";
+
+export type ReviewOrderGroup = {
+  title: string;
+  fileCount: number;
+};
+
+export type ReviewOrderWarning = {
+  path?: string | null;
+  message: string;
+};
+
+export type ChangeKind = "added" | "modified" | "deleted" | "renamed";
+
+export type ViewedStatus =
+  | "unseen"
+  | "viewed"
+  | "reviewed"
+  | "changedSinceViewed"
+  | "changedSinceReviewed";
+
+export type DiffHunk = {
+  header: string;
+  oldStart: number;
+  oldLines: number;
+  newStart: number;
+  newLines: number;
+  lines: DiffLine[];
+};
+
+export type DiffLine = {
+  kind: DiffLineKind;
+  oldLine?: number | null;
+  newLine?: number | null;
+  diffPosition?: number | null;
+  content: string;
+};
+
+export type DiffLineKind = "context" | "addition" | "deletion";
+
+export type ExcludedFile = {
+  path: string;
+  reason: string;
+};
+
+export type PatchArtifact = {
+  strategy: string;
+  fileCount: number;
+  diffTarget: string;
+};
+
+export type InlineCommentVisibility = "private" | "review";
+
+export type InlineCommentSide = "old" | "new";
+
+export type InlineComment = {
+  id: string;
+  fileId: string;
+  path: string;
+  side: InlineCommentSide;
+  startDiffPosition: number;
+  endDiffPosition: number;
+  startLine?: number | null;
+  endLine?: number | null;
+  body: string;
+  visibility: InlineCommentVisibility;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type SessionFileState = {
+  status: ViewedStatus;
+  privateNote: string;
+  publishableDraft: string;
+  inlineComments: InlineComment[];
+};
+
+export type ReviewWorkspaceState = Record<string, SessionFileState>;
+
+export type RecentRepo = {
+  root: string;
+  requestedPath: string;
+  name: string;
+  branch: string;
+  headSha: string;
+  lastOpenedAt: string;
+};
+
+export type ReviewHistoryItem = {
+  id: string;
+  repoRoot: string;
+  requestedPath: string;
+  repoName: string;
+  branch: string;
+  headSha: string;
+  orderSource: ReviewOrderSource;
+  title?: string | null;
+  createdBy?: string | null;
+  baseRef?: string | null;
+  headRef?: string | null;
+  totalFiles: number;
+  additions: number;
+  deletions: number;
+  createdAt: string;
+};
