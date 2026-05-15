@@ -55,8 +55,6 @@ type JumpTarget = {
   requestedAt: number;
 };
 
-type InspectorMode = "file" | "ledger";
-
 const EMPTY_FILE_STATE = createDefaultFileState();
 
 function App() {
@@ -87,7 +85,6 @@ function App() {
   const [isRefsLoading, setIsRefsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [jumpTarget, setJumpTarget] = useState<JumpTarget | null>(null);
-  const [inspectorMode, setInspectorMode] = useState<InspectorMode>("file");
   const refLoadId = useRef(0);
   const sessionLoadId = useRef(0);
   const lastSeenActiveManifest = useRef<string | null>(null);
@@ -214,7 +211,6 @@ function App() {
     setActiveFileId(
       chooseActiveFileId(nextSession, previousSession, previousActiveFileId),
     );
-    setInspectorMode("file");
     setReviewHistory(rememberReviewSession(nextSession));
 
     if (nextSession.order.manifestPath) {
@@ -667,18 +663,10 @@ function App() {
     void loadRefsForRepo(repoPath, { applyDefaults: false });
   }, [isRefsLoading, loadRefsForRepo, repoPath]);
 
-  const expandSectionHint = useMemo(() => {
-    if (!jumpTarget?.expandSection) {
-      return null;
-    }
-    return { section: jumpTarget.expandSection, key: jumpTarget.requestedAt };
-  }, [jumpTarget]);
-
   const handleScrollHandled = useCallback(() => setJumpTarget(null), []);
 
   const jumpToNote = useCallback(
     (target: { fileId: string; diffPosition?: number; expandSection?: "private" | "draft" }) => {
-      setInspectorMode("file");
       if (target.fileId !== activeFileId) {
         // The existing useEffect that depends on activeFileId will advance unseen → viewed.
         setActiveFileId(target.fileId);
@@ -852,26 +840,6 @@ function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [toggleDiffViewMode]);
 
-  useEffect(() => {
-    function onKeyDown(event: KeyboardEvent) {
-      const target = event.target as HTMLElement | null;
-      const isEditing =
-        target &&
-        (target.tagName === "INPUT" ||
-          target.tagName === "TEXTAREA" ||
-          target.isContentEditable);
-      if (isEditing) {
-        return;
-      }
-      if ((event.metaKey || event.ctrlKey) && !event.shiftKey && event.key.toLowerCase() === "j") {
-        event.preventDefault();
-        setInspectorMode((current) => (current === "ledger" ? "file" : "ledger"));
-      }
-    }
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
-
   return (
     <TooltipProvider>
       <main className="rd-app dark flex h-[100dvh] min-h-[100dvh] w-full max-w-full flex-col overflow-hidden">
@@ -949,10 +917,7 @@ function App() {
                 file={activeFile}
                 fileState={activeFileState}
                 workspaceState={workspaceState}
-                mode={inspectorMode}
-                onModeChange={setInspectorMode}
                 onJumpToNote={jumpToNote}
-                expandSectionHint={expandSectionHint}
                 onPatchFileState={patchFileState}
                 onMarkViewed={markActiveViewed}
                 onMarkReviewed={markActiveReviewed}

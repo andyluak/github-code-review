@@ -56,36 +56,36 @@
 :root {
     --app-font-scale: 1;
 
-    /* Atelier surfaces */
-    --rd-ink: #0a0a0c;
-    --rd-ink-2: #111114;
-    --rd-ink-3: #17171b;
-    --rd-ink-4: #1f1f24;
+    /* Atelier surfaces — lifted from pure black; warm-tinted to keep editorial feel */
+    --rd-ink: #15141B;
+    --rd-ink-2: #1C1B23;
+    --rd-ink-3: #25232C;
+    --rd-ink-4: #2E2C36;
 
-    /* Type colors */
-    --rd-cream: #ece6d8;
-    --rd-cream-2: #c8c1b3;
-    --rd-graphite: #8a8478;
-    --rd-pencil: #5a564e;
+    /* Type colors — warm off-white scale; every pairing AA+ on ink / ink-2 */
+    --rd-cream: #ECE6D8;
+    --rd-cream-2: #C8C1B3;
+    --rd-graphite: #A39E92;
+    --rd-pencil: #8B8478;
 
-    /* Single accent */
-    --rd-vermillion: #ff4f3f;
-    --rd-vermillion-2: #ff7361;
-    --rd-vermillion-bg: rgba(255, 79, 63, 0.10);
-    --rd-vermillion-line: rgba(255, 79, 63, 0.55);
+    /* Single accent — desaturated, hue-shifted toward orange so it can't be confused with diff red */
+    --rd-vermillion: #E66A4F;
+    --rd-vermillion-2: #F08D72;
+    --rd-vermillion-bg: rgba(230, 106, 79, 0.12);
+    --rd-vermillion-line: rgba(230, 106, 79, 0.55);
 
-    /* Diff colors */
-    --rd-add: #34c779;
-    --rd-add-bg: rgba(52, 199, 121, 0.08);
-    --rd-add-line: rgba(52, 199, 121, 0.45);
-    --rd-del: #e0524f;
-    --rd-del-bg: rgba(224, 82, 79, 0.08);
-    --rd-del-line: rgba(224, 82, 79, 0.45);
+    /* Diff colors — softer saturation; overlay alpha bumped so position reads even with CVD */
+    --rd-add: #5AB87C;
+    --rd-add-bg: rgba(90, 184, 124, 0.16);
+    --rd-add-line: rgba(90, 184, 124, 0.50);
+    --rd-del: #D85C58;
+    --rd-del-bg: rgba(216, 92, 88, 0.16);
+    --rd-del-line: rgba(216, 92, 88, 0.50);
 
-    /* Hairlines */
-    --rd-hair: rgba(236, 230, 216, 0.06);
-    --rd-hair-2: rgba(236, 230, 216, 0.12);
-    --rd-hair-3: rgba(236, 230, 216, 0.20);
+    /* Hairlines — slightly more visible against lifted ink */
+    --rd-hair: rgba(236, 230, 216, 0.08);
+    --rd-hair-2: rgba(236, 230, 216, 0.16);
+    --rd-hair-3: rgba(236, 230, 216, 0.24);
 
     /* shadcn baseline (kept for any unmodified shadcn primitives) */
     --background: oklch(1 0 0);
@@ -241,7 +241,7 @@ textarea,
 
 .rd-app {
   background:
-    radial-gradient(circle at 14% 0%, rgba(255, 79, 63, 0.05), transparent 38%),
+    radial-gradient(circle at 14% 0%, rgba(230, 106, 79, 0.05), transparent 38%),
     var(--rd-ink);
   color: var(--rd-cream);
 }
