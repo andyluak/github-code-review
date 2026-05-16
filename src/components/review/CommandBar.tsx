@@ -28,7 +28,6 @@ import type {
   GitCommit,
   GitRef,
   GitRefKind,
-  PullRequestSummary,
   RecentRepo,
   RepoRefs,
   ReviewHistoryItem,
@@ -36,6 +35,12 @@ import type {
   ReviewTargetKind,
   ReviewWorkspaceState,
 } from "@/types/review";
+import type { PullRequestSummary as GhPullRequestSummary } from "@/types/github";
+
+type CommandPullRequestSummary = Pick<
+  GhPullRequestSummary,
+  "number" | "title" | "baseRefName" | "headRefName"
+>;
 
 type CommandBarProps = {
   repoPath: string;
@@ -48,6 +53,8 @@ type CommandBarProps = {
   pullRequestNumber: number | null;
   pullRequestInput: string;
   repoRefs: RepoRefs | null;
+  pullRequests: CommandPullRequestSummary[];
+  pullRequestError: string | null;
   recentRepos: RecentRepo[];
   reviewHistory: ReviewHistoryItem[];
   isLoading: boolean;
@@ -87,6 +94,8 @@ export function CommandBar({
   pullRequestNumber,
   pullRequestInput,
   repoRefs,
+  pullRequests,
+  pullRequestError,
   recentRepos,
   reviewHistory,
   isLoading,
@@ -192,6 +201,8 @@ export function CommandBar({
             pullRequestNumber={pullRequestNumber}
             pullRequestInput={pullRequestInput}
             repoRefs={repoRefs}
+            pullRequests={pullRequests}
+            pullRequestError={pullRequestError}
             disabled={!repoRefs || isRefsLoading}
             onBaseRefChange={onBaseRefChange}
             onHeadRefChange={onHeadRefChange}
@@ -425,6 +436,8 @@ function TargetControls({
   pullRequestNumber,
   pullRequestInput,
   repoRefs,
+  pullRequests,
+  pullRequestError,
   disabled,
   onBaseRefChange,
   onHeadRefChange,
@@ -444,6 +457,8 @@ function TargetControls({
   pullRequestNumber: number | null;
   pullRequestInput: string;
   repoRefs: RepoRefs | null;
+  pullRequests: CommandPullRequestSummary[];
+  pullRequestError: string | null;
   disabled: boolean;
   onBaseRefChange: (value: string) => void;
   onHeadRefChange: (value: string) => void;
@@ -522,8 +537,8 @@ function TargetControls({
     <div className="flex min-w-0 items-center gap-1.5">
       <PullRequestPicker
         value={pullRequestNumber}
-        pullRequests={repoRefs?.pullRequests ?? []}
-        error={repoRefs?.pullRequestError ?? null}
+        pullRequests={pullRequests}
+        error={pullRequestError}
         disabled={disabled}
         onChange={(pullRequest) => {
           onPullRequestNumberChange(pullRequest?.number ?? null);
@@ -834,10 +849,10 @@ function PullRequestPicker({
   onChange,
 }: {
   value: number | null;
-  pullRequests: PullRequestSummary[];
+  pullRequests: CommandPullRequestSummary[];
   error?: string | null;
   disabled: boolean;
-  onChange: (pullRequest: PullRequestSummary | null) => void;
+  onChange: (pullRequest: CommandPullRequestSummary | null) => void;
 }) {
   const [query, setQuery] = useState("");
   const selected =
@@ -1051,7 +1066,7 @@ function filterCommits(commits: GitCommit[], query: string) {
   );
 }
 
-function filterPullRequests(pullRequests: PullRequestSummary[], query: string) {
+function filterPullRequests(pullRequests: CommandPullRequestSummary[], query: string) {
   const needle = query.trim().toLowerCase();
   if (!needle) {
     return pullRequests;

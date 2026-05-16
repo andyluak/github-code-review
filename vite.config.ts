@@ -13,6 +13,35 @@ export default defineConfig(async () => ({
       "@": path.resolve(__dirname, "./src"),
     },
   },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes("node_modules")) {
+            return undefined;
+          }
+          if (id.includes("/mermaid/")) {
+            return undefined;
+          }
+          if (id.includes("/react/") || id.includes("/react-dom/")) {
+            return "vendor-react";
+          }
+          if (id.includes("/@tauri-apps/")) {
+            return "vendor-tauri";
+          }
+          if (
+            id.includes("/lucide-react/") ||
+            id.includes("/radix-ui/") ||
+            id.includes("/react-resizable-panels/") ||
+            id.includes("/@tanstack/react-virtual/")
+          ) {
+            return "vendor-ui";
+          }
+          return undefined;
+        },
+      },
+    },
+  },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //

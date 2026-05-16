@@ -86,6 +86,8 @@ type AnchoredDiffLine = {
   anchor: LineAnchor;
 };
 
+type ThreadsByAnchor = Map<string, ReviewThread[]>;
+
 type SplitDisplayRow = {
   key: string;
   old?: AnchoredDiffLine;
@@ -187,6 +189,7 @@ export const DiffCanvas = memo(function DiffCanvas({
     () => groupCommentsByPosition(visibleInlineComments),
     [visibleInlineComments],
   );
+  const threadsByAnchor = useMemo(() => groupThreadsByAnchor(threads), [threads]);
   const splitRowsByHunk = useMemo(() => {
     if (!file || effectiveMode !== "split" || isOneSided) {
       return [];
@@ -399,7 +402,7 @@ export const DiffCanvas = memo(function DiffCanvas({
                               onDelete={() => onDeleteInlineComment(file.id, comment.id)}
                             />
                           ))}
-                          {threadsForRow(threads, file.path, row).map((t) =>
+                          {threadsForRow(threadsByAnchor, file.path, row).map((t) =>
                             expandedThreadId === t.id ? (
                               <ConversationThread
                                 key={t.id}
@@ -460,7 +463,7 @@ export const DiffCanvas = memo(function DiffCanvas({
                             />
                           ))}
                           {threadsForUnified(
-                            threads,
+                            threadsByAnchor,
                             file.path,
                             line,
                             anchor,
@@ -509,7 +512,11 @@ function areDiffCanvasPropsEqual(
     previous.onMarkReviewed === next.onMarkReviewed &&
     previous.onOpenFile === next.onOpenFile &&
     previous.onSaveInlineComment === next.onSaveInlineComment &&
-    previous.onDeleteInlineComment === next.onDeleteInlineComment
+    previous.onDeleteInlineComment === next.onDeleteInlineComment &&
+    previous.threads === next.threads &&
+    previous.expandedThreadId === next.expandedThreadId &&
+    previous.onExpandThread === next.onExpandThread &&
+    previous.onReplyThread === next.onReplyThread
   );
 }
 
@@ -1263,45 +1270,56 @@ function createCommentId() {
   return `comment-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
+function groupThreadsByAnchor(threads: ReviewThread[] | undefined): ThreadsByAnchor {
+  const grouped: ThreadsByAnchor = new Map();
+  for (const thread of threads ?? []) {
+    if (thread.isOutdated || thread.line === null || thread.line === undefined) {
+      continue;
+    }
+    const key = threadAnchorKey(thread.path, thread.diffSide, thread.line);
+    const bucket = grouped.get(key) ?? [];
+    bucket.push(thread);
+    grouped.set(key, bucket);
+  }
+  return grouped;
+}
+
+function threadAnchorKey(path: string, diffSide: string, line: number) {
+  return `${path}\u0000${diffSide}\u0000${line}`;
+}
+
 function threadsForUnified(
-  threads: ReviewThread[] | undefined,
+  threadsByAnchor: ThreadsByAnchor,
   filePath: string,
   line: DiffLine,
   anchor: LineAnchor,
 ): ReviewThread[] {
-  if (!threads || threads.length === 0) return [];
-  return threads.filter((t) => {
-    if (t.path !== filePath) return false;
-    if (t.isOutdated) return false;
-    const wantNew = anchor.side === "new" && line.newLine !== null && line.newLine !== undefined;
-    const wantOld = anchor.side === "old" && line.oldLine !== null && line.oldLine !== undefined;
-    if (wantNew && t.diffSide === "RIGHT" && t.line === line.newLine) return true;
-    if (wantOld && t.diffSide === "LEFT" && t.line === line.oldLine) return true;
-    return false;
-  });
+  const wantNew = anchor.side === "new" && line.newLine !== null && line.newLine !== undefined;
+  const wantOld = anchor.side === "old" && line.oldLine !== null && line.oldLine !== undefined;
+  if (wantNew) {
+    return threadsByAnchor.get(threadAnchorKey(filePath, "RIGHT", line.newLine!)) ?? [];
+  }
+  if (wantOld) {
+    return threadsByAnchor.get(threadAnchorKey(filePath, "LEFT", line.oldLine!)) ?? [];
+  }
+  return [];
 }
 
 function threadsForRow(
-  threads: ReviewThread[] | undefined,
+  threadsByAnchor: ThreadsByAnchor,
   filePath: string,
   row: SplitDisplayRow,
 ): ReviewThread[] {
-  if (!threads || threads.length === 0) return [];
-  return threads.filter((t) => {
-    if (t.path !== filePath) return false;
-    if (t.isOutdated) return false;
-    if (
-      t.diffSide === "RIGHT" &&
-      row.new &&
-      row.new.line.newLine === t.line
-    )
-      return true;
-    if (
-      t.diffSide === "LEFT" &&
-      row.old &&
-      row.old.line.oldLine === t.line
-    )
-      return true;
-    return false;
-  });
+  const matches: ReviewThread[] = [];
+  if (row.new?.line.newLine !== null && row.new?.line.newLine !== undefined) {
+    matches.push(
+      ...(threadsByAnchor.get(threadAnchorKey(filePath, "RIGHT", row.new.line.newLine)) ?? []),
+    );
+  }
+  if (row.old?.line.oldLine !== null && row.old?.line.oldLine !== undefined) {
+    matches.push(
+      ...(threadsByAnchor.get(threadAnchorKey(filePath, "LEFT", row.old.line.oldLine)) ?? []),
+    );
+  }
+  return matches;
 }

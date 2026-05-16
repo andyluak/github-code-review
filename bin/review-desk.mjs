@@ -2739,6 +2739,7 @@ function command(repoRoot, commandName, args) {
     cwd: repoRoot,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
+    timeout: 15_000,
   });
 }
 

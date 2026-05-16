@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Suspense,
+  lazy,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { AlertCircle, FileDiff, Map as MapIcon } from "lucide-react";
 import { CommandBar } from "@/components/review/CommandBar";
@@ -6,7 +14,6 @@ import { DiffCanvas } from "@/components/review/DiffCanvas";
 import { EmptyState } from "@/components/review/EmptyState";
 import { Inspector } from "@/components/review/Inspector";
 import { PublishSheet } from "@/components/review/PublishSheet";
-import { ReviewMap } from "@/components/review/ReviewMap";
 import { ReviewRail } from "@/components/review/ReviewRail";
 import { SessionHeader } from "@/components/review/SessionHeader";
 import { SessionSwitcher } from "@/components/review/SessionSwitcher";
@@ -59,7 +66,6 @@ import {
 import type {
   ActiveReviewSession,
   InlineComment,
-  PullRequestSummary,
   RecentRepo,
   RepoRefs,
   ReviewDiagram,
@@ -72,6 +78,11 @@ import type {
   SessionFileState,
 } from "@/types/review";
 
+type SelectedPullRequest = Pick<
+  GhPullRequestSummary,
+  "number" | "url" | "baseRefName"
+>;
+
 type JumpTarget = {
   fileId: string;
   diffPosition?: number;
@@ -82,6 +93,10 @@ type JumpTarget = {
 type CenterMode = "diff" | "map";
 
 const EMPTY_FILE_STATE = createDefaultFileState();
+const preloadReviewMap = () => import("@/components/review/ReviewMap");
+const ReviewMap = lazy(() =>
+  preloadReviewMap().then((module) => ({ default: module.ReviewMap })),
+);
 
 function App() {
   const { fontZoom, resetFontZoom } = useFontZoom();
@@ -124,12 +139,27 @@ function App() {
   const activePrNumber =
     session?.target.kind === "pullRequest" ? session.target.number ?? null : null;
   const prContext = usePrContext(repoPath || null, activePrNumber);
-  const prContextIsProvisional = prContext.fromCache && prContext.isRefreshing;
-  const visiblePrContext = prContextIsProvisional ? null : prContext.context;
+  const visiblePrContext = prContext.context;
   const visibleReviewThreads = visiblePrContext?.reviewThreads ?? [];
+  const hasReviewMapSource = Boolean(reviewDiagram?.source.trim());
   const jumpThreadRef = useRef<(direction: 1 | -1) => void>(() => {});
   const paletteOpenRef = useRef(false);
   paletteOpenRef.current = paletteOpen;
+
+  useEffect(() => {
+    if (!session) {
+      return;
+    }
+    const timeout = window.setTimeout(() => {
+      void preloadReviewMap().then((module) => {
+        if (hasReviewMapSource) {
+          void module.preloadMermaidRenderer();
+        }
+      });
+    }, hasReviewMapSource ? 750 : 250);
+    return () => window.clearTimeout(timeout);
+  }, [hasReviewMapSource, session?.id]);
+
   jumpThreadRef.current = (direction: 1 | -1) => {
     if (!session || visibleReviewThreads.length === 0) return;
     const visible = visibleReviewThreads.filter((t) => !t.isOutdated);
@@ -214,10 +244,11 @@ function App() {
       return null;
     }
     return (
+      inbox.data?.pullRequests.find((pullRequest) => pullRequest.number === pullRequestNumber) ??
       repoRefs?.pullRequests.find((pullRequest) => pullRequest.number === pullRequestNumber) ??
       null
     );
-  }, [pullRequestNumber, repoRefs]);
+  }, [inbox.data?.pullRequests, pullRequestNumber, repoRefs]);
 
   useEffect(() => {
     sessionRef.current = session;
@@ -298,6 +329,29 @@ function App() {
       };
     });
   }, []);
+
+  const saveThreadReply = useCallback(
+    (fileId: string, threadId: string, body: string) => {
+      setWorkspaceState((current) => {
+        const previous = {
+          ...createDefaultFileState(),
+          ...current[fileId],
+        };
+
+        return {
+          ...current,
+          [fileId]: {
+            ...previous,
+            threadReplies: {
+              ...(previous.threadReplies ?? {}),
+              [threadId]: body,
+            },
+          },
+        };
+      });
+    },
+    [],
+  );
 
   const loadDiagramForSession = useCallback(async (nextSession: ReviewSession) => {
     const requestId = diagramLoadId.current + 1;
@@ -878,6 +932,7 @@ function App() {
       }
 
       const pullRequest =
+        inbox.data?.pullRequests.find((item) => item.number === value) ??
         repoRefs?.pullRequests.find((item) => item.number === value) ?? null;
       startTargetSession({
         kind: "pullRequest",
@@ -887,7 +942,7 @@ function App() {
         headRef: null,
       });
     },
-    [repoRefs, startTargetSession],
+    [inbox.data?.pullRequests, repoRefs, startTargetSession],
   );
 
   const changePullRequestInput = useCallback((value: string) => {
@@ -1195,6 +1250,8 @@ function App() {
           workspaceState={workspaceState}
           fontZoom={fontZoom}
           repoRefs={repoRefs}
+          pullRequests={inbox.data?.pullRequests ?? repoRefs?.pullRequests ?? []}
+          pullRequestError={inbox.error ?? repoRefs?.pullRequestError ?? null}
           recentRepos={recentRepos}
           reviewHistory={reviewHistory}
           isRefsLoading={isRefsLoading}
@@ -1249,18 +1306,20 @@ function App() {
             <section className="flex min-h-0 flex-1 flex-col bg-[var(--rd-ink)]">
               <CenterModeToggle mode={centerMode} onChange={setCenterMode} />
               <div className="min-h-0 flex-1">
-                <ReviewMap
-                  session={session}
-                  diagram={reviewDiagram}
-                  isLoading={isDiagramLoading}
-                  error={diagramError}
-                  onReload={reloadDiagram}
-                  onSave={saveDiagram}
-                  onSelectFile={(fileId) => {
-                    selectFile(fileId);
-                    setCenterMode("diff");
-                  }}
-                />
+                <Suspense fallback={<ReviewMapFallback />}>
+                  <ReviewMap
+                    session={session}
+                    diagram={reviewDiagram}
+                    isLoading={isDiagramLoading}
+                    error={diagramError}
+                    onReload={reloadDiagram}
+                    onSave={saveDiagram}
+                    onSelectFile={(fileId) => {
+                      selectFile(fileId);
+                      setCenterMode("diff");
+                    }}
+                  />
+                </Suspense>
               </div>
             </section>
           ) : (
@@ -1292,13 +1351,7 @@ function App() {
                     threads={visibleReviewThreads}
                     expandedThreadId={expandedThreadId}
                     onExpandThread={setExpandedThreadId}
-                    onReplyThread={(fileId, threadId, body) => {
-                      const current = workspaceState[fileId];
-                      const existing = current?.threadReplies ?? {};
-                      patchFileState(fileId, {
-                        threadReplies: { ...existing, [threadId]: body },
-                      });
-                    }}
+                    onReplyThread={saveThreadReply}
                   />
                 </div>
               </section>
@@ -1642,6 +1695,19 @@ function shouldKeepCurrentSession(
   );
 }
 
+function ReviewMapFallback() {
+  return (
+    <div className="flex h-full min-h-0 flex-col bg-[var(--rd-ink)]">
+      <div className="h-10 shrink-0 border-b border-[var(--rd-hair)]" />
+      <div className="flex min-h-0 flex-1 items-center justify-center px-8 text-center">
+        <div className="rd-display-italic text-[13px] text-[var(--rd-graphite)]">
+          Loading map...
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function buildReviewTargetRequest({
   kind,
   baseRef,
@@ -1661,7 +1727,7 @@ function buildReviewTargetRequest({
   rangeToRef: string;
   pullRequestNumber: number | null;
   pullRequestInput: string;
-  selectedPullRequest: PullRequestSummary | null;
+  selectedPullRequest: SelectedPullRequest | null;
 }): ReviewTargetRequest {
   switch (kind) {
     case "workingTree":

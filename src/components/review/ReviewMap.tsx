@@ -31,6 +31,13 @@ type MermaidRenderState =
   | { status: "ready"; svg: string; error: null }
   | { status: "failed"; svg: string; error: string };
 
+let mermaidRendererPromise: Promise<typeof import("mermaid")> | null = null;
+
+export function preloadMermaidRenderer() {
+  mermaidRendererPromise ??= import("mermaid");
+  return mermaidRendererPromise;
+}
+
 export function ReviewMap({
   session,
   diagram,
@@ -306,7 +313,7 @@ function MermaidPreview({ source }: { source: string }) {
     }
 
     setState((current) => ({ status: "loading", svg: current.svg, error: null }));
-    void import("mermaid")
+    void preloadMermaidRenderer()
       .then(({ default: mermaid }) => {
         if (renderId.current !== id) {
           return null;

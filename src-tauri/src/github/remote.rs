@@ -1,6 +1,7 @@
 use std::path::Path;
 use std::process::Command;
 
+use crate::github::gh::run_gh_command;
 use serde::Deserialize;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,21 +109,21 @@ fn parse_repo_view(body: &str) -> Result<GitHubRepoRef, String> {
 }
 
 fn read_gh_repo_view(repo_root: &Path) -> Result<GitHubRepoRef, String> {
-    let output = Command::new("gh")
-        .current_dir(repo_root)
-        .arg("repo")
-        .arg("view")
-        .arg("--json")
-        .arg("nameWithOwner")
-        .output()
-        .map_err(|error| format!("Failed to run gh repo view: {error}"))?;
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
-    }
-    parse_repo_view(&String::from_utf8_lossy(&output.stdout))
+    let output = run_gh_command(
+        Some(repo_root),
+        &["repo", "view", "--json", "nameWithOwner"],
+        None,
+    )?;
+    parse_repo_view(&output)
 }
 
 pub fn resolve_github_repo(repo_root: &Path) -> Result<GitHubRepoRef, String> {
+    if let Ok(url) = read_default_remote_url(repo_root) {
+        if let Some(repo) = parse_github_remote(&url) {
+            return Ok(repo);
+        }
+    }
+
     if let Ok(repo) = read_gh_repo_view(repo_root) {
         return Ok(repo);
     }

@@ -63,8 +63,8 @@ export function usePrContext(repoPath: string | null, number: number | null) {
     } catch (caught) {
       if (id === generation.current) {
         setState((current) => ({
-          context: current.fromCache ? null : current.context,
-          fromCache: false,
+          context: current.context,
+          fromCache: current.fromCache,
           isRefreshing: false,
           error: caught instanceof Error ? caught.message : String(caught),
         }));

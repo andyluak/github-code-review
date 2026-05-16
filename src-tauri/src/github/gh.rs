@@ -1,4 +1,10 @@
 use serde::de::DeserializeOwned;
+use std::path::Path;
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
+
+const GH_TIMEOUT: Duration = Duration::from_secs(15);
+const GH_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
 pub trait GhRunner: Send + Sync {
     fn run(&self, args: &[&str], stdin: Option<&str>) -> Result<String, String>;
@@ -8,26 +14,125 @@ pub struct RealGh;
 
 impl GhRunner for RealGh {
     fn run(&self, args: &[&str], stdin: Option<&str>) -> Result<String, String> {
-        use std::io::Write;
-        use std::process::{Command, Stdio};
+        run_gh_command(None, args, stdin)
+    }
+}
 
-        let mut cmd = Command::new("gh");
-        cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
-        if stdin.is_some() {
-            cmd.stdin(Stdio::piped());
+pub fn run_gh_command(
+    current_dir: Option<&Path>,
+    args: &[&str],
+    stdin: Option<&str>,
+) -> Result<String, String> {
+    use std::io::{Read, Write};
+    use std::process::{Command, Stdio};
+
+    let mut cmd = Command::new("gh");
+    if let Some(dir) = current_dir {
+        cmd.current_dir(dir);
+    }
+    cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
+    if stdin.is_some() {
+        cmd.stdin(Stdio::piped());
+    }
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| classify_gh_error(&format!("spawn gh: {e}")))?;
+    let stdout = child.stdout.take().map(|mut pipe| {
+        std::thread::spawn(move || {
+            let mut output = Vec::new();
+            pipe.read_to_end(&mut output)
+                .map(|_| output)
+                .map_err(|e| format!("read gh stdout: {e}"))
+        })
+    });
+    let stderr = child.stderr.take().map(|mut pipe| {
+        std::thread::spawn(move || {
+            let mut output = Vec::new();
+            pipe.read_to_end(&mut output)
+                .map(|_| output)
+                .map_err(|e| format!("read gh stderr: {e}"))
+        })
+    });
+
+    if let (Some(stdin_data), Some(mut sink)) = (stdin, child.stdin.take()) {
+        if let Err(error) = sink.write_all(stdin_data.as_bytes()) {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = join_pipe(stdout, "stdout");
+            let _ = join_pipe(stderr, "stderr");
+            return Err(classify_gh_error(&format!("write gh stdin: {error}")));
         }
-        let mut child = cmd.spawn().map_err(|e| format!("spawn gh: {e}"))?;
-        if let (Some(stdin_data), Some(mut sink)) = (stdin, child.stdin.take()) {
-            sink.write_all(stdin_data.as_bytes())
-                .map_err(|e| format!("write stdin: {e}"))?;
+    }
+
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let stdout = join_pipe(stdout, "stdout")?;
+                let stderr = join_pipe(stderr, "stderr")?;
+                if !status.success() {
+                    return Err(classify_gh_error(&String::from_utf8_lossy(&stderr)));
+                }
+                return Ok(String::from_utf8_lossy(&stdout).to_string());
+            }
+            Ok(None) if started.elapsed() >= GH_TIMEOUT => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = join_pipe(stdout, "stdout");
+                let _ = join_pipe(stderr, "stderr");
+                return Err(format!(
+                    "GitHub request timed out after {}s. Local review data is still usable; retry GitHub refresh when the network is responsive.",
+                    GH_TIMEOUT.as_secs()
+                ));
+            }
+            Ok(None) => std::thread::sleep(GH_POLL_INTERVAL),
+            Err(error) => return Err(classify_gh_error(&format!("wait gh: {error}"))),
         }
-        let output = child
-            .wait_with_output()
-            .map_err(|e| format!("wait gh: {e}"))?;
-        if !output.status.success() {
-            return Err(String::from_utf8_lossy(&output.stderr).to_string());
-        }
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    }
+}
+
+fn join_pipe(
+    handle: Option<JoinHandle<Result<Vec<u8>, String>>>,
+    label: &str,
+) -> Result<Vec<u8>, String> {
+    let Some(handle) = handle else {
+        return Ok(Vec::new());
+    };
+    handle
+        .join()
+        .map_err(|_| format!("read gh {label}: reader thread panicked"))?
+        .map_err(|error| classify_gh_error(&error))
+}
+
+fn classify_gh_error(error: &str) -> String {
+    let trimmed = error.trim();
+    if trimmed.is_empty() {
+        return "GitHub command failed without an error message.".to_string();
+    }
+
+    let lower = trimmed.to_ascii_lowercase();
+    let reason = if lower.contains("secondary rate limit") {
+        Some("GitHub secondary rate limit hit")
+    } else if lower.contains("rate limit") {
+        Some("GitHub rate limit hit")
+    } else if lower.contains("not logged into")
+        || lower.contains("authentication")
+        || lower.contains("gh auth login")
+        || lower.contains("bad credentials")
+    {
+        Some("GitHub authentication failed")
+    } else if lower.contains("saml") || lower.contains("sso") {
+        Some("GitHub organization SSO is not authorized")
+    } else if lower.contains("permission") || lower.contains("forbidden") {
+        Some("GitHub permission denied")
+    } else {
+        None
+    };
+
+    match reason {
+        Some(prefix) => format!("{prefix}: {trimmed}"),
+        None => trimmed.to_string(),
     }
 }
 
@@ -86,5 +191,17 @@ mod tests {
         let fake = FakeGh::new(vec![]);
         let err = fake.run(&["api"], None).unwrap_err();
         assert!(err.contains("exhausted"));
+    }
+
+    #[test]
+    fn classifies_rate_limit_errors() {
+        let err = classify_gh_error("API rate limit exceeded");
+        assert!(err.starts_with("GitHub rate limit hit"));
+    }
+
+    #[test]
+    fn classifies_auth_errors() {
+        let err = classify_gh_error("not logged into any GitHub hosts");
+        assert!(err.starts_with("GitHub authentication failed"));
     }
 }

@@ -7,6 +7,8 @@ use std::{
     process::Command,
 };
 
+use crate::github::gh::run_gh_command;
+
 const EMPTY_TREE_SHA: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 #[derive(Debug, Deserialize)]
@@ -1453,8 +1455,6 @@ fn list_review_refs_inner(request: ListReviewRefsRequest) -> Result<RepoRefs, St
     let mut seen_refs = HashSet::new();
     refs.retain(|git_ref| seen_refs.insert(git_ref.name.clone()));
     refs.sort_by(|a, b| ref_weight(a).cmp(&ref_weight(b)).then(a.name.cmp(&b.name)));
-    let pull_requests = list_pull_requests(&repo_root);
-
     Ok(RepoRefs {
         requested_path: request.repo_path,
         root: repo_root.display().to_string(),
@@ -1464,8 +1464,8 @@ fn list_review_refs_inner(request: ListReviewRefsRequest) -> Result<RepoRefs, St
         remotes: list_remotes(&repo_root)?,
         refs,
         commits: list_recent_commits(&repo_root)?,
-        pull_requests: pull_requests.clone().unwrap_or_default(),
-        pull_request_error: pull_requests.err(),
+        pull_requests: Vec::new(),
+        pull_request_error: None,
     })
 }
 
@@ -1660,27 +1660,9 @@ fn parse_commit_line(line: &str) -> Option<GitCommit> {
     })
 }
 
-fn list_pull_requests(repo_root: &Path) -> Result<Vec<PullRequestSummary>, String> {
-    let output = command_stdout(
-        repo_root,
-        "gh",
-        &[
-            "pr",
-            "list",
-            "--limit",
-            "50",
-            "--json",
-            "number,title,baseRefName,headRefName,headRefOid,url,state,headRepository,headRepositoryOwner,isCrossRepository",
-        ],
-    )?;
-    serde_json::from_str::<Vec<PullRequestSummary>>(&output)
-        .map_err(|error| format!("Failed to parse gh pull request list: {error}"))
-}
-
 fn gh_pr_view(repo_root: &Path, selector: &str) -> Result<PullRequestSummary, String> {
-    let output = command_stdout(
-        repo_root,
-        "gh",
+    let output = run_gh_command(
+        Some(repo_root),
         &[
             "pr",
             "view",
@@ -1688,6 +1670,7 @@ fn gh_pr_view(repo_root: &Path, selector: &str) -> Result<PullRequestSummary, St
             "--json",
             "number,title,baseRefName,headRefName,headRefOid,url,state,headRepository,headRepositoryOwner,isCrossRepository",
         ],
+        None,
     )?;
     serde_json::from_str::<PullRequestSummary>(&output)
         .map_err(|error| format!("Failed to parse gh pull request: {error}"))
@@ -2533,21 +2516,6 @@ fn git_stdout_strings(repo_root: &Path, args: &[String]) -> Result<String, Strin
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(format!("git {:?} failed: {}", args, stderr.trim()));
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
-}
-
-fn command_stdout(repo_root: &Path, command: &str, args: &[&str]) -> Result<String, String> {
-    let output = Command::new(command)
-        .current_dir(repo_root)
-        .args(args)
-        .output()
-        .map_err(|error| format!("Failed to run {command} {:?}: {error}", args))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("{command} {:?} failed: {}", args, stderr.trim()));
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())

@@ -114,14 +114,28 @@ export function PullRequestsTab(props: Props) {
   const flatRows = useMemo(() => {
     const out: (
       | { kind: "header"; title: string }
-      | { kind: "row"; pr: GhPullRequestSummary }
+      | { kind: "row"; pr: GhPullRequestSummary; rowIndex: number; hasDraft: boolean }
     )[] = [];
+    let rowIndex = 0;
     for (const s of sections) {
       out.push({ kind: "header", title: s.title });
-      for (const pr of s.rows) out.push({ kind: "row", pr });
+      for (const pr of s.rows) {
+        const ws = workspaceByPr[pr.number];
+        const hasDraft = ws
+          ? Object.values(ws).some(
+              (fs) =>
+                (fs?.publishableDraft?.trim().length ?? 0) > 0 ||
+                (fs?.inlineComments?.some(
+                  (c) => c.visibility === "review",
+                ) ?? false),
+            )
+          : false;
+        out.push({ kind: "row", pr, rowIndex, hasDraft });
+        rowIndex += 1;
+      }
     }
     return out;
-  }, [sections]);
+  }, [sections, workspaceByPr]);
   const hasRows = sections.some((section) => section.rows.length > 0);
 
   const virtualizer = useVirtualizer({
@@ -160,23 +174,6 @@ export function PullRequestsTab(props: Props) {
               </div>
             );
           }
-          const rowsOnly = flatRows.filter(
-            (r): r is { kind: "row"; pr: GhPullRequestSummary } =>
-              r.kind === "row",
-          );
-          const rowIndex = rowsOnly.findIndex(
-            (r) => r.pr.number === item.pr.number,
-          );
-          const ws = workspaceByPr[item.pr.number];
-          const hasDraft = ws
-            ? Object.values(ws).some(
-                (fs) =>
-                  (fs?.publishableDraft?.trim().length ?? 0) > 0 ||
-                  (fs?.inlineComments?.some(
-                    (c) => c.visibility === "review",
-                  ) ?? false),
-              )
-            : false;
           return (
             <div
               key={vi.key}
@@ -185,9 +182,9 @@ export function PullRequestsTab(props: Props) {
             >
               <PRRow
                 pr={item.pr}
-                hasLocalDraft={hasDraft}
+                hasLocalDraft={item.hasDraft}
                 isStale={false}
-                selected={selectedIndex === rowIndex}
+                selected={selectedIndex === item.rowIndex}
                 onSelect={onSelect}
               />
             </div>
