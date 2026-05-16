@@ -154,9 +154,10 @@ export function PublishSheet(props: Props) {
         threadId: r.threadId,
         body: r.body,
       }));
-      const bodyFingerprint = body.trim()
-        ? fingerprintBody(body, prNumber, headSha, event)
-        : null;
+      const bodyFingerprint =
+        body.trim() || event === "APPROVE"
+          ? fingerprintBody(body, prNumber, headSha, event)
+          : null;
       const result = await publishPullRequestReview({
         repoPath,
         number: prNumber,
@@ -187,7 +188,8 @@ export function PublishSheet(props: Props) {
     !isPr ||
     prNumber === null ||
     !headSha ||
-    (reviewInlineDrafts.length === 0 &&
+    (event !== "APPROVE" &&
+      reviewInlineDrafts.length === 0 &&
       threadReplyDrafts.length === 0 &&
       !body.trim());
 

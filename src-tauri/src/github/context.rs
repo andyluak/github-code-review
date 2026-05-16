@@ -26,6 +26,11 @@ pub struct LoadPullRequestContextResponse {
 const CONTEXT_QUERY: &str = r#"
 query($owner: String!, $repo: String!, $number: Int!) {
   repository(owner: $owner, name: $repo) {
+    mergeCommitAllowed
+    squashMergeAllowed
+    rebaseMergeAllowed
+    viewerDefaultMergeMethod
+    deleteBranchOnMerge
     pullRequest(number: $number) {
       number id title url state isDraft updatedAt mergeable mergeStateStatus reviewDecision
       baseRefName headRefName headRefOid
@@ -96,6 +101,16 @@ struct ContextData {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RepoNode {
+    #[serde(default)]
+    merge_commit_allowed: bool,
+    #[serde(default)]
+    squash_merge_allowed: bool,
+    #[serde(default)]
+    rebase_merge_allowed: bool,
+    #[serde(default)]
+    viewer_default_merge_method: Option<String>,
+    #[serde(default)]
+    delete_branch_on_merge: bool,
     pull_request: Option<PullRequestNode>,
 }
 
@@ -286,15 +301,42 @@ pub fn fetch_pr_context(
         None,
     )?;
     let response: ContextResponse = parse_graphql(&body)?;
-    let pr_node = response
+    let repo_node = response
         .data
         .repository
-        .and_then(|r| r.pull_request)
+        .ok_or_else(|| format!("Repository {owner}/{repo} not found"))?;
+    let merge_settings = repo_node.merge_settings();
+    let pr_node = repo_node
+        .pull_request
         .ok_or_else(|| format!("Pull request {number} not found in {owner}/{repo}"))?;
-    build_context_from_node(pr_node)
+    build_context_from_node(merge_settings, pr_node)
 }
 
-fn build_context_from_node(node: PullRequestNode) -> Result<PullRequestContext, String> {
+#[derive(Debug, Clone, Default)]
+struct RepositoryMergeSettings {
+    merge_commit_allowed: bool,
+    squash_merge_allowed: bool,
+    rebase_merge_allowed: bool,
+    viewer_default_merge_method: Option<String>,
+    delete_branch_on_merge: bool,
+}
+
+impl RepoNode {
+    fn merge_settings(&self) -> RepositoryMergeSettings {
+        RepositoryMergeSettings {
+            merge_commit_allowed: self.merge_commit_allowed,
+            squash_merge_allowed: self.squash_merge_allowed,
+            rebase_merge_allowed: self.rebase_merge_allowed,
+            viewer_default_merge_method: self.viewer_default_merge_method.clone(),
+            delete_branch_on_merge: self.delete_branch_on_merge,
+        }
+    }
+}
+
+fn build_context_from_node(
+    merge_settings: RepositoryMergeSettings,
+    node: PullRequestNode,
+) -> Result<PullRequestContext, String> {
     let author = node.author.clone().unwrap_or_default();
     let labels = node
         .labels
@@ -460,11 +502,15 @@ fn build_context_from_node(node: PullRequestNode) -> Result<PullRequestContext, 
     if unresolved > 0 {
         blockers.push(format!("{unresolved} unresolved threads"));
     }
+    let allowed_merge_methods = allowed_merge_methods(&merge_settings);
 
     let merge = PullRequestMergeReadiness {
-        viewer_can_merge: node.viewer_can_update,
+        viewer_can_merge: node.viewer_can_update && !allowed_merge_methods.is_empty(),
         viewer_can_resolve_threads: node.viewer_can_update,
-        allowed_merge_methods: vec!["MERGE".into(), "SQUASH".into(), "REBASE".into()],
+        default_merge_method: merge_settings
+            .viewer_default_merge_method
+            .filter(|method| allowed_merge_methods.contains(method)),
+        allowed_merge_methods,
         merge_state_status: merge_state,
         merge_blockers: blockers,
         expected_head_sha: node.head_ref_oid.clone(),
@@ -472,6 +518,7 @@ fn build_context_from_node(node: PullRequestNode) -> Result<PullRequestContext, 
         head_repo_owner: head_owner,
         head_repo_name: head_name,
         safe_to_delete_branch: !node.is_cross_repository,
+        delete_branch_on_merge: merge_settings.delete_branch_on_merge,
     };
 
     Ok(PullRequestContext {
@@ -483,6 +530,32 @@ fn build_context_from_node(node: PullRequestNode) -> Result<PullRequestContext, 
         fetched_at: super::inbox::now_iso_pub(),
         truncated: false,
     })
+}
+
+pub fn allowed_merge_methods_from_flags(
+    merge_commit_allowed: bool,
+    squash_merge_allowed: bool,
+    rebase_merge_allowed: bool,
+) -> Vec<String> {
+    let mut methods = Vec::new();
+    if merge_commit_allowed {
+        methods.push("MERGE".to_string());
+    }
+    if squash_merge_allowed {
+        methods.push("SQUASH".to_string());
+    }
+    if rebase_merge_allowed {
+        methods.push("REBASE".to_string());
+    }
+    methods
+}
+
+fn allowed_merge_methods(settings: &RepositoryMergeSettings) -> Vec<String> {
+    allowed_merge_methods_from_flags(
+        settings.merge_commit_allowed,
+        settings.squash_merge_allowed,
+        settings.rebase_merge_allowed,
+    )
 }
 
 fn parse_checks_summary(rollup: &StatusCheckRollup) -> ChecksSummary {
@@ -562,10 +635,13 @@ pub fn run_load_pull_request_context(
 }
 
 #[tauri::command]
-pub fn load_pull_request_context(
+pub async fn load_pull_request_context(
     request: LoadPullRequestContextRequest,
 ) -> Result<LoadPullRequestContextResponse, String> {
-    run_load_pull_request_context(&RealGh, &request)
+    crate::blocking::run("load_pull_request_context", move || {
+        run_load_pull_request_context(&RealGh, &request)
+    })
+    .await
 }
 
 #[cfg(test)]
@@ -584,7 +660,13 @@ mod tests {
 
     #[test]
     fn parses_minimal_context_with_blockers() {
-        let body = r#"{"data":{"repository":{"pullRequest":{
+        let body = r#"{"data":{"repository":{
+            "mergeCommitAllowed":false,
+            "squashMergeAllowed":true,
+            "rebaseMergeAllowed":true,
+            "viewerDefaultMergeMethod":"REBASE",
+            "deleteBranchOnMerge":true,
+            "pullRequest":{
             "number":1,"id":"id","title":"t","url":"u","state":"OPEN","isDraft":true,
             "updatedAt":"2026-01-01T00:00:00Z","mergeable":"MERGEABLE","mergeStateStatus":"BLOCKED",
             "reviewDecision":null,"baseRefName":"main","headRefName":"feat","headRefOid":"sha",
@@ -606,5 +688,20 @@ mod tests {
             .contains(&"viewer cannot merge".to_string()));
         assert!(ctx.merge.merge_blockers.contains(&"blocked".to_string()));
         assert!(!ctx.merge.viewer_can_merge);
+        assert_eq!(ctx.merge.allowed_merge_methods, vec!["SQUASH", "REBASE"]);
+        assert_eq!(ctx.merge.default_merge_method.as_deref(), Some("REBASE"));
+        assert!(ctx.merge.delete_branch_on_merge);
+    }
+
+    #[test]
+    fn derives_allowed_merge_methods_from_repository_settings() {
+        assert_eq!(
+            allowed_merge_methods_from_flags(false, true, true),
+            vec!["SQUASH", "REBASE"]
+        );
+        assert_eq!(
+            allowed_merge_methods_from_flags(true, false, false),
+            vec!["MERGE"]
+        );
     }
 }

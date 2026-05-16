@@ -561,10 +561,13 @@ pub fn run_list_my_pull_requests(
 }
 
 #[tauri::command]
-pub fn list_my_pull_requests(
+pub async fn list_my_pull_requests(
     request: ListMyPullRequestsRequest,
 ) -> Result<ListMyPullRequestsResponse, String> {
-    run_list_my_pull_requests(&RealGh, &request)
+    crate::blocking::run("list_my_pull_requests", move || {
+        run_list_my_pull_requests(&RealGh, &request)
+    })
+    .await
 }
 
 #[cfg(test)]

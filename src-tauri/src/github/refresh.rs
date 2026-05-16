@@ -229,10 +229,13 @@ pub fn run_refresh_pull_request_head(
 }
 
 #[tauri::command]
-pub fn refresh_pull_request_head(
+pub async fn refresh_pull_request_head(
     request: RefreshPullRequestHeadRequest,
 ) -> Result<RefreshPullRequestHeadResponse, String> {
-    run_refresh_pull_request_head(&RealGh, &request)
+    crate::blocking::run("refresh_pull_request_head", move || {
+        run_refresh_pull_request_head(&RealGh, &request)
+    })
+    .await
 }
 
 #[cfg(test)]

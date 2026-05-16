@@ -1,4 +1,5 @@
 mod app_data;
+mod blocking;
 mod github;
 mod review;
 

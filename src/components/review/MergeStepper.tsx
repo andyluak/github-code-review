@@ -6,12 +6,14 @@ import type {
   PullRequestMergeReadiness,
 } from "@/types/github";
 
+type MergeMethod = "MERGE" | "SQUASH" | "REBASE";
+
 type Props = {
   open: boolean;
   repoPath: string;
   number: number;
   readiness: PullRequestMergeReadiness | null;
-  defaultMethod?: "MERGE" | "SQUASH" | "REBASE";
+  defaultMethod?: MergeMethod;
   defaultDeleteBranch?: boolean;
   onClose: () => void;
   onMerged: (response: MergePullRequestResponse) => void;
@@ -29,18 +31,14 @@ export function MergeStepper(props: Props) {
     onMerged,
   } = props;
   const allowed = readiness?.allowedMergeMethods ?? [];
-  const initialMethod: "MERGE" | "SQUASH" | "REBASE" =
-    (defaultMethod && (allowed as string[]).includes(defaultMethod)
-      ? defaultMethod
-      : (allowed.find((m) => m === "SQUASH") ?? allowed[0] ?? "SQUASH")) as
-      | "MERGE"
-      | "SQUASH"
-      | "REBASE";
-  const [method, setMethod] = useState<"MERGE" | "SQUASH" | "REBASE">(
-    initialMethod,
+  const [method, setMethod] = useState<MergeMethod>(
+    pickInitialMethod(allowed, defaultMethod, readiness?.defaultMergeMethod),
   );
   const [deleteBranch, setDeleteBranch] = useState<boolean>(
-    Boolean(defaultDeleteBranch && readiness?.safeToDeleteBranch),
+    Boolean(
+      (defaultDeleteBranch ?? readiness?.deleteBranchOnMerge) &&
+        readiness?.safeToDeleteBranch,
+    ),
   );
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -52,7 +50,8 @@ export function MergeStepper(props: Props) {
     !readiness ||
     !readiness.viewerCanMerge ||
     blockers.length > 0 ||
-    !readiness.expectedHeadSha;
+    !readiness.expectedHeadSha ||
+    !(allowed as string[]).includes(method);
 
   async function onMergeClick() {
     if (!readiness) return;
@@ -95,9 +94,7 @@ export function MergeStepper(props: Props) {
               <button
                 key={m}
                 type="button"
-                onClick={() =>
-                  setMethod(m as "MERGE" | "SQUASH" | "REBASE")
-                }
+                onClick={() => setMethod(m as MergeMethod)}
                 className={
                   method === m
                     ? "rounded bg-[var(--rd-vermillion)] px-2 py-1 text-white"
@@ -108,6 +105,11 @@ export function MergeStepper(props: Props) {
               </button>
             ))}
           </div>
+          {allowed.length === 0 ? (
+            <div className="mt-2 text-[var(--rd-del)]">
+              No merge methods are enabled for this repository.
+            </div>
+          ) : null}
         </div>
         <label className="flex items-center gap-2 text-[var(--rd-cream-2)]">
           <input
@@ -155,4 +157,18 @@ export function MergeStepper(props: Props) {
       </div>
     </div>
   );
+}
+
+function pickInitialMethod(
+  allowed: string[],
+  defaultMethod?: MergeMethod,
+  repositoryDefault?: MergeMethod | null,
+): MergeMethod {
+  if (defaultMethod && allowed.includes(defaultMethod)) return defaultMethod;
+  if (repositoryDefault && allowed.includes(repositoryDefault)) {
+    return repositoryDefault;
+  }
+  return (allowed.find((method) => method === "SQUASH") ??
+    allowed[0] ??
+    "SQUASH") as MergeMethod;
 }

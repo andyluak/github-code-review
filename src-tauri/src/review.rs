@@ -468,8 +468,13 @@ struct ActiveReviewSessionPointer {
 }
 
 #[tauri::command]
-pub fn create_review_session(request: CreateReviewSessionRequest) -> Result<ReviewSession, String> {
-    create_review_session_inner(request)
+pub async fn create_review_session(
+    request: CreateReviewSessionRequest,
+) -> Result<ReviewSession, String> {
+    crate::blocking::run("create_review_session", move || {
+        create_review_session_inner(request)
+    })
+    .await
 }
 
 fn create_review_session_inner(
@@ -593,8 +598,13 @@ fn create_review_session_inner(
 }
 
 #[tauri::command]
-pub fn import_review_session(request: ImportReviewSessionRequest) -> Result<ReviewSession, String> {
-    import_review_session_from_path(PathBuf::from(&request.manifest_path))
+pub async fn import_review_session(
+    request: ImportReviewSessionRequest,
+) -> Result<ReviewSession, String> {
+    crate::blocking::run("import_review_session", move || {
+        import_review_session_from_path(PathBuf::from(&request.manifest_path))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -769,7 +779,16 @@ fn command_stderr(stderr: &[u8]) -> String {
 }
 
 #[tauri::command]
-pub fn load_review_workspace_state(
+pub async fn load_review_workspace_state(
+    request: LoadReviewWorkspaceStateRequest,
+) -> Result<Option<serde_json::Value>, String> {
+    crate::blocking::run("load_review_workspace_state", move || {
+        load_review_workspace_state_inner(request)
+    })
+    .await
+}
+
+fn load_review_workspace_state_inner(
     request: LoadReviewWorkspaceStateRequest,
 ) -> Result<Option<serde_json::Value>, String> {
     let repo_root = repo_root(&request.repo_path)?;
@@ -808,14 +827,34 @@ pub fn load_review_workspace_state(
 }
 
 #[tauri::command]
-pub fn save_review_workspace_state(request: SaveReviewWorkspaceStateRequest) -> Result<(), String> {
+pub async fn save_review_workspace_state(
+    request: SaveReviewWorkspaceStateRequest,
+) -> Result<(), String> {
+    crate::blocking::run("save_review_workspace_state", move || {
+        save_review_workspace_state_inner(request)
+    })
+    .await
+}
+
+fn save_review_workspace_state_inner(
+    request: SaveReviewWorkspaceStateRequest,
+) -> Result<(), String> {
     let repo_root = repo_root(&request.repo_path)?;
     let state_path = review_workspace_state_path(&repo_root, &request.session_id)?;
     write_json_file(&state_path, &request.state)
 }
 
 #[tauri::command]
-pub fn load_review_diagram(
+pub async fn load_review_diagram(
+    request: LoadReviewDiagramRequest,
+) -> Result<Option<serde_json::Value>, String> {
+    crate::blocking::run("load_review_diagram", move || {
+        load_review_diagram_inner(request)
+    })
+    .await
+}
+
+fn load_review_diagram_inner(
     request: LoadReviewDiagramRequest,
 ) -> Result<Option<serde_json::Value>, String> {
     let repo_root = repo_root(&request.repo_path)?;
@@ -850,7 +889,18 @@ pub fn load_review_diagram(
 }
 
 #[tauri::command]
-pub fn save_review_diagram(request: SaveReviewDiagramRequest) -> Result<serde_json::Value, String> {
+pub async fn save_review_diagram(
+    request: SaveReviewDiagramRequest,
+) -> Result<serde_json::Value, String> {
+    crate::blocking::run("save_review_diagram", move || {
+        save_review_diagram_inner(request)
+    })
+    .await
+}
+
+fn save_review_diagram_inner(
+    request: SaveReviewDiagramRequest,
+) -> Result<serde_json::Value, String> {
     let repo_root = repo_root(&request.repo_path)?;
     let session_id = request
         .diagram
@@ -902,7 +952,16 @@ fn import_review_session_from_path(manifest_path: PathBuf) -> Result<ReviewSessi
 }
 
 #[tauri::command]
-pub fn get_active_review_session(
+pub async fn get_active_review_session(
+    request: ActiveReviewSessionRequest,
+) -> Result<Option<ActiveReviewSession>, String> {
+    crate::blocking::run("get_active_review_session", move || {
+        get_active_review_session_inner(request)
+    })
+    .await
+}
+
+fn get_active_review_session_inner(
     request: ActiveReviewSessionRequest,
 ) -> Result<Option<ActiveReviewSession>, String> {
     let repo_root = repo_root(&request.repo_path)?;
@@ -924,7 +983,16 @@ pub fn get_active_review_session(
 }
 
 #[tauri::command]
-pub fn import_active_review_session(
+pub async fn import_active_review_session(
+    request: ActiveReviewSessionRequest,
+) -> Result<Option<ReviewSession>, String> {
+    crate::blocking::run("import_active_review_session", move || {
+        import_active_review_session_inner(request)
+    })
+    .await
+}
+
+fn import_active_review_session_inner(
     request: ActiveReviewSessionRequest,
 ) -> Result<Option<ReviewSession>, String> {
     let repo_root = repo_root(&request.repo_path)?;
@@ -940,7 +1008,14 @@ pub fn import_active_review_session(
 }
 
 #[tauri::command]
-pub fn get_global_active_review_session() -> Result<Option<ActiveReviewSession>, String> {
+pub async fn get_global_active_review_session() -> Result<Option<ActiveReviewSession>, String> {
+    crate::blocking::run("get_global_active_review_session", move || {
+        get_global_active_review_session_inner()
+    })
+    .await
+}
+
+fn get_global_active_review_session_inner() -> Result<Option<ActiveReviewSession>, String> {
     let Some((_, pointer)) = global_active_review_session_pointer()? else {
         return Ok(None);
     };
@@ -963,7 +1038,14 @@ pub fn get_global_active_review_session() -> Result<Option<ActiveReviewSession>,
 }
 
 #[tauri::command]
-pub fn import_global_active_review_session() -> Result<Option<ReviewSession>, String> {
+pub async fn import_global_active_review_session() -> Result<Option<ReviewSession>, String> {
+    crate::blocking::run("import_global_active_review_session", move || {
+        import_global_active_review_session_inner()
+    })
+    .await
+}
+
+fn import_global_active_review_session_inner() -> Result<Option<ReviewSession>, String> {
     let Some((_, pointer)) = global_active_review_session_pointer()? else {
         return Ok(None);
     };
@@ -1351,7 +1433,11 @@ fn refresh_summary(session: &mut ReviewSession) {
 }
 
 #[tauri::command]
-pub fn list_review_refs(request: ListReviewRefsRequest) -> Result<RepoRefs, String> {
+pub async fn list_review_refs(request: ListReviewRefsRequest) -> Result<RepoRefs, String> {
+    crate::blocking::run("list_review_refs", move || list_review_refs_inner(request)).await
+}
+
+fn list_review_refs_inner(request: ListReviewRefsRequest) -> Result<RepoRefs, String> {
     let repo_root = repo_root(&request.repo_path)?;
     let current_branch = git_stdout(&repo_root, &["rev-parse", "--abbrev-ref", "HEAD"])?
         .trim()
@@ -1608,10 +1694,31 @@ fn gh_pr_view(repo_root: &Path, selector: &str) -> Result<PullRequestSummary, St
 }
 
 fn fetch_pull_request_head(repo_root: &Path, remote: &str, number: u64) -> Result<String, String> {
-    let local_ref = format!("refs/remotes/review-desk/pr-{number}");
+    let local_ref = pull_request_local_ref(number);
     let source_ref = format!("pull/{number}/head:{local_ref}");
     git_stdout(repo_root, &["fetch", remote, &source_ref])?;
     Ok(local_ref)
+}
+
+fn reusable_pull_request_head_ref(
+    repo_root: &Path,
+    number: u64,
+    expected_sha: Option<&str>,
+) -> Option<String> {
+    let local_ref = pull_request_local_ref(number);
+    let actual_sha = rev_parse_ref(repo_root, &local_ref)?;
+    if expected_sha
+        .map(|sha| sha.eq_ignore_ascii_case(&actual_sha))
+        .unwrap_or(true)
+    {
+        Some(local_ref)
+    } else {
+        None
+    }
+}
+
+fn pull_request_local_ref(number: u64) -> String {
+    format!("refs/remotes/review-desk/pr-{number}")
 }
 
 fn best_base_ref(repo_root: &Path, remote: &str, base: &str) -> String {
@@ -1635,6 +1742,13 @@ fn best_base_ref(repo_root: &Path, remote: &str, base: &str) -> String {
 
 fn git_ref_exists(repo_root: &Path, reference: &str) -> bool {
     git_stdout(repo_root, &["rev-parse", "--verify", "--quiet", reference]).is_ok()
+}
+
+fn rev_parse_ref(repo_root: &Path, reference: &str) -> Option<String> {
+    git_stdout(repo_root, &["rev-parse", "--verify", reference])
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn single_commit_base(repo_root: &Path, commit: &str) -> String {
@@ -1855,22 +1969,36 @@ fn resolve_pull_request_target(
         })?;
     let number = pr_number.or_else(|| metadata.as_ref().map(|pr| pr.number));
     let pr_url = pr_url_resolved;
+    let metadata_head_sha = metadata
+        .as_ref()
+        .map(|pr| pr.head_ref_oid.clone())
+        .filter(|sha| !sha.trim().is_empty());
 
     let head = if let Some(number) = number {
-        match fetch_pull_request_head(repo_root, &remote_name, number) {
-            Ok(local_ref) => local_ref,
-            Err(fetch_error) => {
-                // Falling back to the raw GitHub SHA only helps if the object is locally
-                // resolvable. Otherwise downstream `git diff` will explode on an unknown rev.
-                let candidate = metadata
-                    .as_ref()
-                    .map(|pr| pr.head_ref_oid.clone())
-                    .filter(|sha| git_ref_exists(repo_root, sha));
-                candidate.ok_or_else(|| {
-                    format!(
+        if let Some(local_ref) =
+            reusable_pull_request_head_ref(repo_root, number, metadata_head_sha.as_deref())
+        {
+            local_ref
+        } else if let Some(local_sha) = metadata_head_sha
+            .as_deref()
+            .filter(|sha| git_ref_exists(repo_root, sha))
+        {
+            local_sha.to_string()
+        } else {
+            match fetch_pull_request_head(repo_root, &remote_name, number) {
+                Ok(local_ref) => local_ref,
+                Err(fetch_error) => {
+                    // Falling back to the raw GitHub SHA only helps if the object is locally
+                    // resolvable. Otherwise downstream `git diff` will explode on an unknown rev.
+                    let candidate = metadata_head_sha
+                        .clone()
+                        .filter(|sha| git_ref_exists(repo_root, sha));
+                    candidate.ok_or_else(|| {
+                        format!(
                         "Failed to fetch pull request #{number} from `{remote_name}`: {fetch_error}"
                     )
-                })?
+                    })?
+                }
             }
         }
     } else {
@@ -1885,16 +2013,12 @@ fn resolve_pull_request_target(
         .map(|value| format!("PR #{value}: {base}...{head}"))
         .unwrap_or_else(|| format!("PR: {base}...{head}"));
 
-    let head_sha = metadata
-        .as_ref()
-        .map(|pr| pr.head_ref_oid.clone())
-        .filter(|sha| !sha.trim().is_empty())
-        .or_else(|| {
-            git_stdout(repo_root, &["rev-parse", &head])
-                .ok()
-                .map(|sha| sha.trim().to_string())
-                .filter(|sha| !sha.is_empty())
-        });
+    let head_sha = metadata_head_sha.or_else(|| {
+        git_stdout(repo_root, &["rev-parse", &head])
+            .ok()
+            .map(|sha| sha.trim().to_string())
+            .filter(|sha| !sha.is_empty())
+    });
     if head_sha.is_none() {
         if let Some(error) = metadata_error {
             return Err(format!("Failed to resolve pull request head SHA. {error}"));
@@ -2449,22 +2573,7 @@ fn command_stdout_with_args(
 }
 
 fn write_json_file<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|error| format!("Failed to create directory {}: {error}", parent.display()))?;
-    }
-
-    let contents = serde_json::to_string_pretty(value)
-        .map_err(|error| format!("Failed to serialize JSON for {}: {error}", path.display()))?;
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("workspace-state.json");
-    let temp_path = path.with_file_name(format!(".{file_name}.tmp"));
-    fs::write(&temp_path, format!("{contents}\n"))
-        .map_err(|error| format!("Failed to write {}: {error}", temp_path.display()))?;
-    fs::rename(&temp_path, path)
-        .map_err(|error| format!("Failed to move {} into place: {error}", path.display()))
+    crate::app_data::write_json_atomic(path, value)
 }
 
 #[cfg(test)]
@@ -2476,6 +2585,24 @@ mod tests {
 
     static TEMP_REPO_COUNTER: AtomicU64 = AtomicU64::new(0);
     static ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+    fn create_review_session(request: CreateReviewSessionRequest) -> Result<ReviewSession, String> {
+        create_review_session_inner(request)
+    }
+
+    fn import_review_session(request: ImportReviewSessionRequest) -> Result<ReviewSession, String> {
+        import_review_session_from_path(PathBuf::from(request.manifest_path))
+    }
+
+    fn load_review_diagram(
+        request: LoadReviewDiagramRequest,
+    ) -> Result<Option<serde_json::Value>, String> {
+        load_review_diagram_inner(request)
+    }
+
+    fn save_review_diagram(request: SaveReviewDiagramRequest) -> Result<serde_json::Value, String> {
+        save_review_diagram_inner(request)
+    }
 
     #[test]
     fn parses_hunk_header_with_counts() {
@@ -2542,6 +2669,40 @@ mod tests {
             Some(128)
         );
         assert_eq!(parse_pr_number("not-a-pr"), None);
+    }
+
+    #[test]
+    fn reuses_cached_pull_request_ref_when_sha_matches() {
+        let repo = temp_repo();
+        fs::create_dir_all(&repo).unwrap();
+        fs::write(repo.join("README.md"), "initial\n").unwrap();
+        run_git(&repo, &["init"]);
+        run_git(&repo, &["config", "user.email", "review-desk@example.test"]);
+        run_git(&repo, &["config", "user.name", "Review Desk Test"]);
+        run_git(&repo, &["add", "README.md"]);
+        run_git(&repo, &["commit", "-m", "initial"]);
+
+        let head = git_stdout(&repo, &["rev-parse", "HEAD"]).unwrap();
+        let head = head.trim();
+        run_git(
+            &repo,
+            &["update-ref", "refs/remotes/review-desk/pr-7", head],
+        );
+
+        assert_eq!(
+            reusable_pull_request_head_ref(&repo, 7, Some(head)).as_deref(),
+            Some("refs/remotes/review-desk/pr-7")
+        );
+        assert_eq!(
+            reusable_pull_request_head_ref(
+                &repo,
+                7,
+                Some("0000000000000000000000000000000000000000"),
+            ),
+            None
+        );
+
+        fs::remove_dir_all(repo).unwrap();
     }
 
     #[test]

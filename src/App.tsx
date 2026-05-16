@@ -42,6 +42,7 @@ import {
   loadRecentRepos,
   loadReviewHistory,
   loadReviewSessionSnapshot,
+  loadReviewSessionSnapshotForTarget,
   loadWorkspaceState,
   openReviewFile,
   rememberRepo,
@@ -633,6 +634,15 @@ function App() {
             pullRequestInput,
             selectedPullRequest,
           });
+
+        const cachedSession = loadReviewSessionSnapshotForTarget({
+          repoPath: nextRepoPath,
+          target,
+        });
+        if (cachedSession && requestId === sessionLoadId.current) {
+          applySession(cachedSession);
+        }
+
         const nextSession = await createReviewSession({
           repoPath: nextRepoPath,
           baseRef: nextBaseRef?.trim() || null,

@@ -13,6 +13,8 @@ import type {
   ReviewDiagram,
   ReviewHistoryItem,
   ReviewSession,
+  ReviewTarget,
+  ReviewTargetRequest,
   ReviewWorkspaceState,
   SaveReviewDiagramRequest,
   SaveReviewWorkspaceStateRequest,
@@ -256,6 +258,22 @@ export function loadReviewSessionSnapshot(sessionId: string): ReviewSession | nu
   return readJson<ReviewSession | null>(reviewSessionSnapshotKey(sessionId), null);
 }
 
+export function loadReviewSessionSnapshotForTarget({
+  repoPath,
+  target,
+}: {
+  repoPath: string;
+  target: ReviewTargetRequest;
+}): ReviewSession | null {
+  const historyItem = loadReviewHistory().find((item) => {
+    if (item.orderSource !== "git") return false;
+    if (item.repoRoot !== repoPath && item.requestedPath !== repoPath) return false;
+    return targetMatchesRequest(item.target, target);
+  });
+
+  return historyItem ? loadReviewSessionSnapshot(historyItem.id) : null;
+}
+
 export function saveReviewSessionSnapshot(session: ReviewSession) {
   try {
     window.localStorage.setItem(
@@ -369,6 +387,35 @@ function reviewHistoryKey(item: ReviewHistoryItem) {
   }
 
   return `${repo}|legacy|${item.baseRef ?? ""}|${normalHistoryRef(item.headRef)}`;
+}
+
+function targetMatchesRequest(target: ReviewTarget, request: ReviewTargetRequest) {
+  if (target.kind !== request.kind) return false;
+
+  switch (request.kind) {
+    case "workingTree":
+      return true;
+    case "branch":
+      return (
+        target.kind === "branch" &&
+        target.baseRef === request.baseRef &&
+        target.headRef === request.headRef
+      );
+    case "commit":
+      return target.kind === "commit" && target.commit === request.commit;
+    case "commitRange":
+      return (
+        target.kind === "commitRange" &&
+        target.fromRef === request.fromRef &&
+        target.toRef === request.toRef
+      );
+    case "pullRequest": {
+      if (target.kind !== "pullRequest") return false;
+      if (request.number && target.number === request.number) return true;
+      const requestUrl = request.url?.trim();
+      return Boolean(requestUrl && target.url === requestUrl);
+    }
+  }
 }
 
 function normalHistoryRef(value?: string | null) {

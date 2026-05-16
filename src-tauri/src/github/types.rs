@@ -137,6 +137,7 @@ pub struct PullRequestMergeReadiness {
     pub viewer_can_merge: bool,
     pub viewer_can_resolve_threads: bool,
     pub allowed_merge_methods: Vec<String>,
+    pub default_merge_method: Option<String>,
     pub merge_state_status: String,
     pub merge_blockers: Vec<String>,
     pub expected_head_sha: String,
@@ -144,6 +145,8 @@ pub struct PullRequestMergeReadiness {
     pub head_repo_owner: String,
     pub head_repo_name: String,
     pub safe_to_delete_branch: bool,
+    #[serde(default)]
+    pub delete_branch_on_merge: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

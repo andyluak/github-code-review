@@ -31,12 +31,11 @@ pub fn run_merge_pull_request(
     gh: &dyn GhRunner,
     request: &MergePullRequestRequest,
 ) -> Result<MergePullRequestResponse, String> {
-    let upper = request.method.to_uppercase();
-    if !ALLOWED_METHODS.contains(&upper.as_str()) {
-        return Err(format!("Unsupported merge method: {}", request.method));
-    }
+    let upper = normalize_merge_method(&request.method)?;
     let repo_root = crate::review::resolve_repo_root(&request.repo_path)?;
     let repo = resolve_github_repo(&repo_root)?;
+    let context = fetch_pr_context(gh, &repo.owner, &repo.repo, request.number)?;
+    ensure_method_allowed(&upper, &context.merge.allowed_merge_methods)?;
     let probe = fetch_pr_head_probe(gh, &repo.owner, &repo.repo, request.number)?;
     assert_expected_head(&probe, &request.expected_head_sha)?;
 
@@ -78,33 +77,36 @@ pub fn run_merge_pull_request(
 
     let mut branch_deleted = false;
     if merged && request.delete_branch {
-        // Re-fetch PR context to determine whether the head ref lives in the base repo.
         // Cross-repo (fork) PRs are never auto-deleted here regardless of caller intent.
-        if let Ok(ctx) = fetch_pr_context(gh, &repo.owner, &repo.repo, request.number) {
-            if ctx.merge.safe_to_delete_branch
-                && ctx.merge.head_repo_owner.eq_ignore_ascii_case(&repo.owner)
-                && ctx.merge.head_repo_name.eq_ignore_ascii_case(&repo.repo)
+        if context.merge.safe_to_delete_branch
+            && context
+                .merge
+                .head_repo_owner
+                .eq_ignore_ascii_case(&repo.owner)
+            && context
+                .merge
+                .head_repo_name
+                .eq_ignore_ascii_case(&repo.repo)
+        {
+            let url = format!(
+                "repos/{}/{}/git/refs/heads/{}",
+                repo.owner, repo.repo, context.merge.head_ref_name
+            );
+            if gh
+                .run(
+                    &[
+                        "api",
+                        "--method",
+                        "DELETE",
+                        "-H",
+                        "Accept: application/vnd.github+json",
+                        &url,
+                    ],
+                    None,
+                )
+                .is_ok()
             {
-                let url = format!(
-                    "repos/{}/{}/git/refs/heads/{}",
-                    repo.owner, repo.repo, ctx.merge.head_ref_name
-                );
-                if gh
-                    .run(
-                        &[
-                            "api",
-                            "--method",
-                            "DELETE",
-                            "-H",
-                            "Accept: application/vnd.github+json",
-                            &url,
-                        ],
-                        None,
-                    )
-                    .is_ok()
-                {
-                    branch_deleted = true;
-                }
+                branch_deleted = true;
             }
         }
     }
@@ -117,10 +119,36 @@ pub fn run_merge_pull_request(
 }
 
 #[tauri::command]
-pub fn merge_pull_request(
+pub async fn merge_pull_request(
     request: MergePullRequestRequest,
 ) -> Result<MergePullRequestResponse, String> {
-    run_merge_pull_request(&RealGh, &request)
+    crate::blocking::run("merge_pull_request", move || {
+        run_merge_pull_request(&RealGh, &request)
+    })
+    .await
+}
+
+fn normalize_merge_method(method: &str) -> Result<String, String> {
+    let upper = method.to_uppercase();
+    if !ALLOWED_METHODS.contains(&upper.as_str()) {
+        return Err(format!("Unsupported merge method: {method}"));
+    }
+    Ok(upper)
+}
+
+fn ensure_method_allowed(method: &str, allowed_methods: &[String]) -> Result<(), String> {
+    if allowed_methods.iter().any(|allowed| allowed == method) {
+        return Ok(());
+    }
+
+    let allowed = if allowed_methods.is_empty() {
+        "none".to_string()
+    } else {
+        allowed_methods.join(", ")
+    };
+    Err(format!(
+        "Merge method {method} is disabled by repository settings. Allowed methods: {allowed}"
+    ))
 }
 
 #[cfg(test)]
@@ -149,5 +177,13 @@ mod tests {
         assert!(ALLOWED_METHODS.contains(&"MERGE"));
         assert!(ALLOWED_METHODS.contains(&"SQUASH"));
         assert!(ALLOWED_METHODS.contains(&"REBASE"));
+    }
+
+    #[test]
+    fn rejects_methods_disabled_by_repo_settings() {
+        let allowed = vec!["SQUASH".to_string(), "REBASE".to_string()];
+        assert!(ensure_method_allowed("SQUASH", &allowed).is_ok());
+        let err = ensure_method_allowed("MERGE", &allowed).unwrap_err();
+        assert!(err.contains("disabled by repository settings"));
     }
 }

@@ -102,6 +102,7 @@ export type PullRequestMergeReadiness = {
   viewerCanMerge: boolean;
   viewerCanResolveThreads: boolean;
   allowedMergeMethods: string[];
+  defaultMergeMethod: "MERGE" | "SQUASH" | "REBASE" | null;
   mergeStateStatus: string;
   mergeBlockers: string[];
   expectedHeadSha: string;
@@ -109,6 +110,7 @@ export type PullRequestMergeReadiness = {
   headRepoOwner: string;
   headRepoName: string;
   safeToDeleteBranch: boolean;
+  deleteBranchOnMerge: boolean;
 };
 
 export type PullRequestContext = {

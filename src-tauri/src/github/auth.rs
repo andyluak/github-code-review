@@ -39,8 +39,8 @@ pub fn fetch_viewer(gh: &dyn GhRunner) -> Result<GitHubViewer, String> {
 }
 
 #[tauri::command]
-pub fn get_github_viewer() -> Result<GitHubViewer, String> {
-    fetch_viewer(&RealGh)
+pub async fn get_github_viewer() -> Result<GitHubViewer, String> {
+    crate::blocking::run("get_github_viewer", move || fetch_viewer(&RealGh)).await
 }
 
 #[cfg(test)]

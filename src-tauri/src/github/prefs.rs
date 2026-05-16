@@ -26,7 +26,11 @@ pub struct SetRepoPrefsRequest {
 }
 
 #[tauri::command]
-pub fn get_repo_prefs(request: GetRepoPrefsRequest) -> Result<GetRepoPrefsResponse, String> {
+pub async fn get_repo_prefs(request: GetRepoPrefsRequest) -> Result<GetRepoPrefsResponse, String> {
+    crate::blocking::run("get_repo_prefs", move || get_repo_prefs_inner(request)).await
+}
+
+fn get_repo_prefs_inner(request: GetRepoPrefsRequest) -> Result<GetRepoPrefsResponse, String> {
     let repo_root = crate::review::resolve_repo_root(&request.repo_path)?;
     let path = pr_prefs_path(&repo_root)?;
     let prefs = read_json::<RepoPrefs>(&path)?.unwrap_or_default();
@@ -34,7 +38,11 @@ pub fn get_repo_prefs(request: GetRepoPrefsRequest) -> Result<GetRepoPrefsRespon
 }
 
 #[tauri::command]
-pub fn set_repo_prefs(request: SetRepoPrefsRequest) -> Result<GetRepoPrefsResponse, String> {
+pub async fn set_repo_prefs(request: SetRepoPrefsRequest) -> Result<GetRepoPrefsResponse, String> {
+    crate::blocking::run("set_repo_prefs", move || set_repo_prefs_inner(request)).await
+}
+
+fn set_repo_prefs_inner(request: SetRepoPrefsRequest) -> Result<GetRepoPrefsResponse, String> {
     let repo_root = crate::review::resolve_repo_root(&request.repo_path)?;
     let path = pr_prefs_path(&repo_root)?;
     let mut prefs = read_json::<RepoPrefs>(&path)?.unwrap_or_default();

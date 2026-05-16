@@ -99,7 +99,12 @@ pub fn run_publish_pull_request_review(
         .filter(|r| !already_thread.contains(&r.fingerprint))
         .collect();
 
-    let body_already_posted = request.body.trim().is_empty() || body_fingerprint_already_posted;
+    let body_already_posted = body_or_event_already_posted(
+        &request.event,
+        &request.body,
+        request.body_fingerprint.as_deref(),
+        body_fingerprint_already_posted,
+    );
 
     if pending_inline.is_empty() && pending_thread.is_empty() && body_already_posted {
         let last_review_id = record
@@ -228,10 +233,25 @@ pub fn run_publish_pull_request_review(
 }
 
 #[tauri::command]
-pub fn publish_pull_request_review(
+pub async fn publish_pull_request_review(
     request: PublishReviewRequest,
 ) -> Result<PublishReviewResponse, String> {
-    run_publish_pull_request_review(&RealGh, &request)
+    crate::blocking::run("publish_pull_request_review", move || {
+        run_publish_pull_request_review(&RealGh, &request)
+    })
+    .await
+}
+
+fn body_or_event_already_posted(
+    event: &str,
+    body: &str,
+    body_fingerprint: Option<&str>,
+    body_fingerprint_already_posted: bool,
+) -> bool {
+    if body_fingerprint.is_some() {
+        return body_fingerprint_already_posted;
+    }
+    event == "COMMENT" && body.trim().is_empty()
 }
 
 #[cfg(test)]
@@ -290,5 +310,17 @@ mod tests {
             .collect();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].fingerprint, "FP-B");
+    }
+
+    #[test]
+    fn empty_approval_is_publishable_review_event() {
+        assert!(!body_or_event_already_posted("APPROVE", "", None, false));
+        assert!(body_or_event_already_posted("COMMENT", "", None, false));
+        assert!(body_or_event_already_posted(
+            "APPROVE",
+            "",
+            Some("approval-fingerprint"),
+            true,
+        ));
     }
 }

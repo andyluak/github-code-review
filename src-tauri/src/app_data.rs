@@ -5,6 +5,9 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static ATOMIC_WRITE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub fn review_desk_data_dir() -> Option<PathBuf> {
     if let Some(path) = env::var_os("REVIEW_DESK_DATA_DIR") {
@@ -100,11 +103,7 @@ pub fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), Str
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| format!("Invalid path: {}", path.display()))?;
-    let tmp_name = format!(".{file_name}.tmp");
-    let tmp_path = path
-        .parent()
-        .map(|parent| parent.join(&tmp_name))
-        .unwrap_or_else(|| PathBuf::from(&tmp_name));
+    let tmp_path = atomic_write_tmp_path(path, file_name);
     {
         let mut tmp_file = fs::File::create(&tmp_path)
             .map_err(|error| format!("Failed to open tmp file {}: {error}", tmp_path.display()))?;
@@ -123,6 +122,14 @@ pub fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), Str
         )
     })?;
     Ok(())
+}
+
+fn atomic_write_tmp_path(path: &Path, file_name: &str) -> PathBuf {
+    let counter = ATOMIC_WRITE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let tmp_name = format!(".{file_name}.{}.{}.tmp", std::process::id(), counter);
+    path.parent()
+        .map(|parent| parent.join(&tmp_name))
+        .unwrap_or_else(|| PathBuf::from(&tmp_name))
 }
 
 fn slug(value: &str) -> String {
@@ -225,6 +232,47 @@ mod tests {
         write_json_atomic(&path, &value).unwrap();
         let read: Sample = read_json(&path).unwrap().unwrap();
         assert_eq!(read, value);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn atomic_write_temp_paths_do_not_collide() {
+        let path = Path::new("/tmp/review-desk-sample.json");
+        let left = atomic_write_tmp_path(path, "review-desk-sample.json");
+        let right = atomic_write_tmp_path(path, "review-desk-sample.json");
+        assert_ne!(left, right);
+    }
+
+    #[test]
+    fn atomic_write_allows_concurrent_same_path_writes() {
+        let dir = std::env::temp_dir().join(format!(
+            "review-desk-app-data-concurrent-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+
+        let handles = (0..16)
+            .map(|count| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    let value = Sample {
+                        name: "alex".to_string(),
+                        count,
+                    };
+                    write_json_atomic(&path, &value)
+                })
+            })
+            .collect::<Vec<_>>();
+
+        for handle in handles {
+            handle.join().unwrap().unwrap();
+        }
+
+        let read: Sample = read_json(&path).unwrap().unwrap();
+        assert_eq!(read.name, "alex");
+        assert!(read.count < 16);
         fs::remove_dir_all(&dir).unwrap();
     }
 
