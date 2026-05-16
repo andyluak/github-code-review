@@ -6,8 +6,11 @@ import {
   fingerprintThreadReply,
 } from "@/lib/fingerprint";
 import { publishPullRequestReview } from "@/lib/github";
+import { MergeStepper } from "@/components/review/MergeStepper";
 import type {
   PublishInlineComment,
+  PullRequestContext,
+  PullRequestMergeReadiness,
   PublishReviewEvent,
   PublishReviewResponse,
   PublishThreadReply,
@@ -22,23 +25,40 @@ type Props = {
   open: boolean;
   session: ReviewSession;
   workspaceState: ReviewWorkspaceState;
+  prContext: PullRequestContext | null;
   onClose: () => void;
   onPublished: (response: PublishReviewResponse) => void;
+  onMerged?: () => void;
 };
 
 const EVENTS: PublishReviewEvent[] = ["COMMENT", "APPROVE", "REQUEST_CHANGES"];
 
 export function PublishSheet(props: Props) {
-  const { open, session, workspaceState, onClose, onPublished } = props;
+  const {
+    open,
+    session,
+    workspaceState,
+    prContext,
+    onClose,
+    onPublished,
+    onMerged,
+  } = props;
   const [event, setEvent] = useState<PublishReviewEvent>("COMMENT");
   const [body, setBody] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [mergePending, setMergePending] = useState<PullRequestMergeReadiness | null>(null);
 
   const target = session.target;
   const isPr = target.kind === "pullRequest";
   const prNumber = isPr ? target.number ?? null : null;
-  const headSha = isPr ? target.headSha ?? null : null;
+  const headSha = isPr
+    ? firstPresent(
+        prContext?.merge.expectedHeadSha,
+        prContext?.summary.headRefOid,
+        target.headSha,
+      )
+    : null;
   const repoPath = session.repo.requestedPath;
 
   const reviewInlineDrafts = useMemo<InlineComment[]>(() => {
@@ -77,6 +97,26 @@ export function PublishSheet(props: Props) {
   }, [workspaceState]);
 
   if (!open) return null;
+
+  if (mergePending && isPr && prNumber !== null) {
+    return (
+      <MergeStepper
+        open
+        repoPath={repoPath}
+        number={prNumber}
+        readiness={mergePending}
+        onClose={() => {
+          setMergePending(null);
+          onClose();
+        }}
+        onMerged={() => {
+          setMergePending(null);
+          onMerged?.();
+          onClose();
+        }}
+      />
+    );
+  }
 
   async function onSubmit() {
     if (!isPr || prNumber === null || !headSha) {
@@ -128,7 +168,13 @@ export function PublishSheet(props: Props) {
         threadReplies,
       });
       onPublished(result);
-      onClose();
+      if (event === "APPROVE" && prContext?.merge) {
+        // Morph into merge step. Refresh the readiness from current context — the head
+        // SHA in there is what the backend just validated against.
+        setMergePending(prContext.merge);
+      } else {
+        onClose();
+      }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
     } finally {
@@ -222,4 +268,12 @@ export function PublishSheet(props: Props) {
       </div>
     </div>
   );
+}
+
+function firstPresent(...values: Array<string | null | undefined>): string | null {
+  for (const value of values) {
+    const trimmed = value?.trim();
+    if (trimmed) return trimmed;
+  }
+  return null;
 }

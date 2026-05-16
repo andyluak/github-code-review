@@ -1,9 +1,13 @@
 import { useMemo } from "react";
+import { MarkdownView } from "@/components/review/MarkdownView";
 import type { PullRequestContext, TimelineEvent } from "@/types/github";
 
-type Props = { prContext: PullRequestContext | null };
+type Props = {
+  prContext: PullRequestContext | null;
+  error?: string | null;
+};
 
-export function ActivityList({ prContext }: Props) {
+export function ActivityList({ prContext, error }: Props) {
   const events = useMemo<TimelineEvent[]>(() => {
     if (!prContext) return [];
     return [...prContext.timeline, ...prContext.topLevelComments].sort(
@@ -11,12 +15,20 @@ export function ActivityList({ prContext }: Props) {
         new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
     );
   }, [prContext]);
-  if (!prContext)
+  if (!prContext) {
+    if (error) {
+      return (
+        <div className="p-4 font-mono text-[11px] leading-snug text-[var(--rd-del)]">
+          {error}
+        </div>
+      );
+    }
     return (
       <div className="p-4 font-mono text-[11px] text-[var(--rd-pencil)]">
         Loading activity…
       </div>
     );
+  }
   if (events.length === 0)
     return (
       <div className="p-4 font-mono text-[11px] text-[var(--rd-pencil)]">
@@ -36,9 +48,12 @@ export function ActivityList({ prContext }: Props) {
               <span>{relative(e.createdAt)}</span>
             </div>
             {e.body ? (
-              <div className="mt-1 text-[12px] text-[var(--rd-cream-2)]">
+              <MarkdownView
+                className="mt-2 rounded-md border border-[var(--rd-hair)] bg-[var(--rd-ink-2)] px-3 py-2 font-sans"
+                compact
+              >
                 {e.body}
-              </div>
+              </MarkdownView>
             ) : null}
           </li>
         ))}

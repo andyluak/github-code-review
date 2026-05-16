@@ -968,6 +968,9 @@ function ReviewHistoryMenu({
               className="mt-0.5 inline-flex size-6 shrink-0 items-center justify-center rounded-md text-[var(--rd-pencil)] hover:bg-[var(--rd-del-bg)] hover:text-[var(--rd-del)] focus-visible:bg-[var(--rd-del-bg)] focus-visible:text-[var(--rd-del)] focus-visible:outline-none"
               aria-label={`Delete ${item.repoName} from review history`}
               onPointerDown={(event) => event.stopPropagation()}
+              onPointerUp={(event) => event.stopPropagation()}
+              onMouseDown={(event) => event.stopPropagation()}
+              onMouseUp={(event) => event.stopPropagation()}
               onClick={(event) => {
                 event.preventDefault();
                 event.stopPropagation();

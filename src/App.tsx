@@ -8,9 +8,11 @@ import { Inspector } from "@/components/review/Inspector";
 import { PublishSheet } from "@/components/review/PublishSheet";
 import { ReviewMap } from "@/components/review/ReviewMap";
 import { ReviewRail } from "@/components/review/ReviewRail";
+import { SessionHeader } from "@/components/review/SessionHeader";
 import { SessionSwitcher } from "@/components/review/SessionSwitcher";
 import { Button } from "@/components/ui/button";
 import { useKeybinding } from "@/hooks/use-keybinding";
+import { usePrContext } from "@/hooks/use-pr-context";
 import { usePrInbox } from "@/hooks/use-pr-inbox";
 import type {
   PullRequestSummary as GhPullRequestSummary,
@@ -112,13 +114,63 @@ function App() {
   const [jumpTarget, setJumpTarget] = useState<JumpTarget | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [publishOpen, setPublishOpen] = useState(false);
+  const [expandedThreadId, setExpandedThreadId] = useState<string | null>(null);
   const inbox = usePrInbox(repoPath || null);
+  const activePrNumber =
+    session?.target.kind === "pullRequest" ? session.target.number ?? null : null;
+  const prContext = usePrContext(repoPath || null, activePrNumber);
+  const jumpThreadRef = useRef<(direction: 1 | -1) => void>(() => {});
+  const paletteOpenRef = useRef(false);
+  paletteOpenRef.current = paletteOpen;
+  jumpThreadRef.current = (direction: 1 | -1) => {
+    const threads = prContext.context?.reviewThreads ?? [];
+    if (!session || threads.length === 0) return;
+    const visible = threads.filter((t) => !t.isOutdated);
+    if (visible.length === 0) return;
+    const currentIdx = expandedThreadId
+      ? visible.findIndex((t) => t.id === expandedThreadId)
+      : -1;
+    const nextIdx =
+      currentIdx < 0
+        ? direction === 1
+          ? 0
+          : visible.length - 1
+        : (currentIdx + direction + visible.length) % visible.length;
+    const next = visible[nextIdx];
+    setExpandedThreadId(next.id);
+    const file = session.files.find((f) => f.path === next.path);
+    if (file) {
+      setActiveFileId(file.id);
+      setJumpTarget({ fileId: file.id, requestedAt: Date.now() });
+    }
+  };
   useKeybinding(
     useMemo(
       () => [
         {
           combo: "cmd+k",
           handler: () => setPaletteOpen((v) => !v),
+        },
+        {
+          combo: "t",
+          handler: () => {
+            if (paletteOpenRef.current) return;
+            setExpandedThreadId((current) => (current ? null : current));
+          },
+        },
+        {
+          combo: "]",
+          handler: () => {
+            if (paletteOpenRef.current) return;
+            jumpThreadRef.current(1);
+          },
+        },
+        {
+          combo: "[",
+          handler: () => {
+            if (paletteOpenRef.current) return;
+            jumpThreadRef.current(-1);
+          },
         },
       ],
       [],
@@ -780,7 +832,7 @@ function App() {
         number: value,
         url: pullRequest?.url ?? null,
         baseRef: pullRequest?.baseRefName ?? null,
-        headRef: pullRequest?.headRefOid ?? null,
+        headRef: null,
       });
     },
     [repoRefs, startTargetSession],
@@ -1104,6 +1156,24 @@ function App() {
           onImportAgentSession={importAgentSession}
           onCreateSession={createSession}
         />
+        {session ? (
+          <SessionHeader
+            session={session}
+            prSummary={(() => {
+              if (session.target.kind !== "pullRequest") return null;
+              const n = session.target.number;
+              if (n === null || n === undefined) return null;
+              return (
+                inbox.data?.pullRequests.find((pr) => pr.number === n) ?? null
+              );
+            })()}
+            isStaleHead={false}
+            draftsCount={countPublishableDrafts(workspaceState)}
+            onOpenSwitcher={() => setPaletteOpen(true)}
+            onRefresh={() => createSession()}
+            onOpenPublish={() => setPublishOpen(true)}
+          />
+        ) : null}
 
         {error ? (
           <div className="flex items-center gap-2 border-b border-[var(--rd-del-line)] bg-[var(--rd-del-bg)] px-4 py-2 text-sm text-[var(--rd-del)]">
@@ -1157,6 +1227,16 @@ function App() {
                     onOpenFile={openActiveFile}
                     onSaveInlineComment={saveInlineComment}
                     onDeleteInlineComment={deleteInlineComment}
+                    threads={prContext.context?.reviewThreads}
+                    expandedThreadId={expandedThreadId}
+                    onExpandThread={setExpandedThreadId}
+                    onReplyThread={(fileId, threadId, body) => {
+                      const current = workspaceState[fileId];
+                      const existing = current?.threadReplies ?? {};
+                      patchFileState(fileId, {
+                        threadReplies: { ...existing, [threadId]: body },
+                      });
+                    }}
                   />
                 </div>
               </section>
@@ -1174,6 +1254,24 @@ function App() {
                 onPatchFileState={patchFileState}
                 onMarkViewed={markActiveViewed}
                 onMarkReviewed={markActiveReviewed}
+                onPublishReview={
+                  session.target.kind === "pullRequest"
+                    ? () => setPublishOpen(true)
+                    : undefined
+                }
+                prContext={prContext.context}
+                prContextError={prContext.error}
+                onJumpToThread={(target) => {
+                  const file = session.files.find(
+                    (f) => f.path === target.path,
+                  );
+                  if (!file) return;
+                  setActiveFileId(file.id);
+                  setJumpTarget({
+                    fileId: file.id,
+                    requestedAt: Date.now(),
+                  });
+                }}
               />
             </ResizablePanel>
           </ResizablePanelGroup>
@@ -1244,15 +1342,38 @@ function App() {
             open={publishOpen}
             session={session}
             workspaceState={workspaceState}
+            prContext={prContext.context}
             onClose={() => setPublishOpen(false)}
             onPublished={(_response: PublishReviewResponse) => {
               void inbox.refresh();
+              void prContext.refresh();
+            }}
+            onMerged={() => {
+              void inbox.refresh();
+              void prContext.refresh();
             }}
           />
         ) : null}
       </main>
     </TooltipProvider>
   );
+}
+
+function countPublishableDrafts(state: ReviewWorkspaceState): number {
+  let n = 0;
+  for (const fs of Object.values(state)) {
+    if (!fs) continue;
+    if ((fs.publishableDraft?.trim().length ?? 0) > 0) n++;
+    for (const c of fs.inlineComments ?? []) {
+      if (c.visibility === "review") n++;
+    }
+    if (fs.threadReplies) {
+      for (const reply of Object.values(fs.threadReplies)) {
+        if (reply.trim()) n++;
+      }
+    }
+  }
+  return n;
 }
 
 function CenterModeToggle({
@@ -1447,7 +1568,7 @@ function buildReviewTargetRequest({
         number: number ?? null,
         url: url ?? null,
         baseRef: selectedPullRequest?.baseRefName ?? null,
-        headRef: selectedPullRequest?.headRefOid ?? null,
+        headRef: null,
       };
     }
   }

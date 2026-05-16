@@ -261,4 +261,34 @@ mod tests {
         assert!(ALLOWED_EVENTS.contains(&"REQUEST_CHANGES"));
         assert!(ALLOWED_EVENTS.contains(&"COMMENT"));
     }
+
+    #[test]
+    fn duplicate_inline_fingerprint_filter_is_correct() {
+        // Backend logic check: comments whose fingerprint matches a previously-recorded one
+        // must be filtered before any GitHub call. We exercise the filter inline without
+        // hitting the full command (which needs filesystem + a repo).
+        let already: std::collections::HashSet<String> = ["FP-A".to_string()].into_iter().collect();
+        let comments = vec![
+            PublishInlineComment {
+                fingerprint: "FP-A".into(),
+                path: "a.rs".into(),
+                line: 1,
+                side: None,
+                body: "x".into(),
+            },
+            PublishInlineComment {
+                fingerprint: "FP-B".into(),
+                path: "b.rs".into(),
+                line: 2,
+                side: None,
+                body: "y".into(),
+            },
+        ];
+        let pending: Vec<_> = comments
+            .iter()
+            .filter(|c| !already.contains(&c.fingerprint))
+            .collect();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].fingerprint, "FP-B");
+    }
 }

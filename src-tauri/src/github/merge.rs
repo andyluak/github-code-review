@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::github::context::fetch_pr_context;
 use crate::github::gh::{GhRunner, RealGh};
 use crate::github::refresh::{assert_expected_head, fetch_pr_head_probe};
 use crate::github::remote::resolve_github_repo;
@@ -77,19 +78,35 @@ pub fn run_merge_pull_request(
 
     let mut branch_deleted = false;
     if merged && request.delete_branch {
-        // Backend safety: only delete same-repo branches. We obtain the head repo from a fresh
-        // probe via the context layer — keep it minimal here by reading head_repo from the
-        // probe-friendly mergeStateStatus and skipping if uncertain. Conservatively, we attempt
-        // delete only when expected_head_sha matched AND the local repo and head repo agree.
-        let url = format!(
-            "repos/{}/{}/git/refs/heads/{}",
-            repo.owner, repo.repo, "HEAD_BRANCH_PLACEHOLDER"
-        );
-        // Caller must supply head branch via separate flow; for now we skip when ambiguous.
-        let _ = url;
-        // We do NOT auto-delete branches without explicit head info from caller — this matches
-        // the safety order in the plan.
-        branch_deleted = false;
+        // Re-fetch PR context to determine whether the head ref lives in the base repo.
+        // Cross-repo (fork) PRs are never auto-deleted here regardless of caller intent.
+        if let Ok(ctx) = fetch_pr_context(gh, &repo.owner, &repo.repo, request.number) {
+            if ctx.merge.safe_to_delete_branch
+                && ctx.merge.head_repo_owner.eq_ignore_ascii_case(&repo.owner)
+                && ctx.merge.head_repo_name.eq_ignore_ascii_case(&repo.repo)
+            {
+                let url = format!(
+                    "repos/{}/{}/git/refs/heads/{}",
+                    repo.owner, repo.repo, ctx.merge.head_ref_name
+                );
+                if gh
+                    .run(
+                        &[
+                            "api",
+                            "--method",
+                            "DELETE",
+                            "-H",
+                            "Accept: application/vnd.github+json",
+                            &url,
+                        ],
+                        None,
+                    )
+                    .is_ok()
+                {
+                    branch_deleted = true;
+                }
+            }
+        }
     }
 
     Ok(MergePullRequestResponse {

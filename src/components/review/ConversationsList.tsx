@@ -3,15 +3,23 @@ import type { PullRequestContext, ReviewThread } from "@/types/github";
 
 type Props = {
   prContext: PullRequestContext | null;
+  error?: string | null;
   onJump: (target: { path: string; line: number }) => void;
 };
 
-export function ConversationsList({ prContext, onJump }: Props) {
+export function ConversationsList({ prContext, error, onJump }: Props) {
   const grouped = useMemo(
     () => groupByFile(prContext?.reviewThreads ?? []),
     [prContext],
   );
   if (!prContext) {
+    if (error) {
+      return (
+        <div className="p-4 font-mono text-[11px] leading-snug text-[var(--rd-del)]">
+          {error}
+        </div>
+      );
+    }
     return (
       <div className="p-4 font-mono text-[11px] text-[var(--rd-pencil)]">
         Loading conversations…

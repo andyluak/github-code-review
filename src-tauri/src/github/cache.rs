@@ -34,10 +34,8 @@ mod tests {
     #[test]
     fn repo_github_dir_under_repo_data_dir() {
         let _guard = crate::app_data::TEST_ENV_MUTEX.lock().unwrap();
-        let dir = std::env::temp_dir().join(format!(
-            "review-desk-github-cache-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("review-desk-github-cache-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         std::env::set_var("REVIEW_DESK_DATA_DIR", &dir);
@@ -48,7 +46,10 @@ mod tests {
         assert_eq!(path, dir.join("repos").join(&key).join("github"));
         assert_eq!(
             inbox_cache_path(repo).unwrap(),
-            dir.join("repos").join(&key).join("github").join("inbox.json"),
+            dir.join("repos")
+                .join(&key)
+                .join("github")
+                .join("inbox.json"),
         );
 
         std::env::remove_var("REVIEW_DESK_DATA_DIR");

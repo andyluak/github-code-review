@@ -137,7 +137,7 @@ pub fn fetch_pr_head_probe(
         .data
         .repository
         .and_then(|r| r.pull_request)
-        .ok_or_else(|| format!("Pull request {number} not found"))?;
+        .ok_or_else(|| format!("Pull request {number} not found in {owner}/{repo}"))?;
     let checks_summary = pr
         .commits
         .as_ref()

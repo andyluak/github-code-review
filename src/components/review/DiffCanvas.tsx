@@ -31,6 +31,9 @@ import { useDiffViewMode, type DiffViewMode } from "@/hooks/use-diff-view-mode";
 import { compactPath, pathParts } from "@/lib/format";
 import { highlightCodeLine } from "@/lib/syntax-highlight";
 import { MarkdownView } from "@/components/review/MarkdownView";
+import { ConversationBubble } from "@/components/review/ConversationBubble";
+import { ConversationThread } from "@/components/review/ConversationThread";
+import type { ReviewThread } from "@/types/github";
 import type {
   DiffLine,
   InlineComment,
@@ -58,6 +61,10 @@ type DiffCanvasProps = {
   onOpenFile: () => void;
   onSaveInlineComment: (fileId: string, comment: InlineComment) => void;
   onDeleteInlineComment: (fileId: string, commentId: string) => void;
+  threads?: ReviewThread[];
+  expandedThreadId?: string | null;
+  onExpandThread?: (id: string | null) => void;
+  onReplyThread?: (fileId: string, threadId: string, body: string) => void;
 };
 
 type LineAnchor = {
@@ -98,6 +105,10 @@ export const DiffCanvas = memo(function DiffCanvas({
   onOpenFile,
   onSaveInlineComment,
   onDeleteInlineComment,
+  threads,
+  expandedThreadId,
+  onExpandThread,
+  onReplyThread,
 }: DiffCanvasProps) {
   const [viewMode, setViewMode] = useDiffViewMode();
   const [draftTarget, setDraftTarget] = useState<CommentTarget | null>(null);
@@ -388,6 +399,24 @@ export const DiffCanvas = memo(function DiffCanvas({
                               onDelete={() => onDeleteInlineComment(file.id, comment.id)}
                             />
                           ))}
+                          {threadsForRow(threads, file.path, row).map((t) =>
+                            expandedThreadId === t.id ? (
+                              <ConversationThread
+                                key={t.id}
+                                thread={t}
+                                onCollapse={() => onExpandThread?.(null)}
+                                onReply={(id, body) =>
+                                  onReplyThread?.(file.id, id, body)
+                                }
+                              />
+                            ) : (
+                              <ConversationBubble
+                                key={t.id}
+                                thread={t}
+                                onExpand={(id) => onExpandThread?.(id)}
+                              />
+                            ),
+                          )}
                         </Fragment>
                       );
                     })
@@ -430,6 +459,29 @@ export const DiffCanvas = memo(function DiffCanvas({
                               onDelete={() => onDeleteInlineComment(file.id, comment.id)}
                             />
                           ))}
+                          {threadsForUnified(
+                            threads,
+                            file.path,
+                            line,
+                            anchor,
+                          ).map((t) =>
+                            expandedThreadId === t.id ? (
+                              <ConversationThread
+                                key={t.id}
+                                thread={t}
+                                onCollapse={() => onExpandThread?.(null)}
+                                onReply={(id, body) =>
+                                  onReplyThread?.(file.id, id, body)
+                                }
+                              />
+                            ) : (
+                              <ConversationBubble
+                                key={t.id}
+                                thread={t}
+                                onExpand={(id) => onExpandThread?.(id)}
+                              />
+                            ),
+                          )}
                         </Fragment>
                       );
                     })}
@@ -1209,4 +1261,47 @@ function lineRangeLabel(
 
 function createCommentId() {
   return `comment-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function threadsForUnified(
+  threads: ReviewThread[] | undefined,
+  filePath: string,
+  line: DiffLine,
+  anchor: LineAnchor,
+): ReviewThread[] {
+  if (!threads || threads.length === 0) return [];
+  return threads.filter((t) => {
+    if (t.path !== filePath) return false;
+    if (t.isOutdated) return false;
+    const wantNew = anchor.side === "new" && line.newLine !== null && line.newLine !== undefined;
+    const wantOld = anchor.side === "old" && line.oldLine !== null && line.oldLine !== undefined;
+    if (wantNew && t.diffSide === "RIGHT" && t.line === line.newLine) return true;
+    if (wantOld && t.diffSide === "LEFT" && t.line === line.oldLine) return true;
+    return false;
+  });
+}
+
+function threadsForRow(
+  threads: ReviewThread[] | undefined,
+  filePath: string,
+  row: SplitDisplayRow,
+): ReviewThread[] {
+  if (!threads || threads.length === 0) return [];
+  return threads.filter((t) => {
+    if (t.path !== filePath) return false;
+    if (t.isOutdated) return false;
+    if (
+      t.diffSide === "RIGHT" &&
+      row.new &&
+      row.new.line.newLine === t.line
+    )
+      return true;
+    if (
+      t.diffSide === "LEFT" &&
+      row.old &&
+      row.old.line.oldLine === t.line
+    )
+      return true;
+    return false;
+  });
 }

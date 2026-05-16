@@ -279,21 +279,18 @@ fn pr_node_to_summary(node: PrNode, viewer_login: &str, reason: InboxReason) -> 
                 .any(|login| login == viewer_login)
         })
         .unwrap_or(false);
-    let viewer_review_state = node
-        .latest_reviews
-        .as_ref()
-        .and_then(|c| {
-            c.nodes
-                .iter()
-                .filter(|n| {
-                    n.author
-                        .as_ref()
-                        .map(|a| a.login == viewer_login)
-                        .unwrap_or(false)
-                })
-                .last()
-                .and_then(|n| n.state.clone())
-        });
+    let viewer_review_state = node.latest_reviews.as_ref().and_then(|c| {
+        c.nodes
+            .iter()
+            .filter(|n| {
+                n.author
+                    .as_ref()
+                    .map(|a| a.login == viewer_login)
+                    .unwrap_or(false)
+            })
+            .last()
+            .and_then(|n| n.state.clone())
+    });
     let checks_summary = node
         .commits
         .as_ref()
@@ -445,8 +442,16 @@ pub fn fetch_inbox(
 pub fn sort_inbox(results: &mut [PullRequestSummary]) {
     results.sort_by(|a, b| {
         // 1) review-requested or both first
-        let a_priority = if a.is_review_requested_from_viewer { 0 } else { 1 };
-        let b_priority = if b.is_review_requested_from_viewer { 0 } else { 1 };
+        let a_priority = if a.is_review_requested_from_viewer {
+            0
+        } else {
+            1
+        };
+        let b_priority = if b.is_review_requested_from_viewer {
+            0
+        } else {
+            1
+        };
         match a_priority.cmp(&b_priority) {
             Ordering::Equal => {}
             ord => return ord,
@@ -655,7 +660,10 @@ mod tests {
                 ]}
             }
         }"#.into())]);
-        let repo = GitHubRepoRef { owner: "owner".into(), repo: "repo".into() };
+        let repo = GitHubRepoRef {
+            owner: "owner".into(),
+            repo: "repo".into(),
+        };
         let prs = fetch_inbox(&fake, &repo, "alex").unwrap();
         assert_eq!(prs.len(), 1);
         assert_eq!(prs[0].inbox_reason, InboxReason::Both);
@@ -691,5 +699,22 @@ mod tests {
         // 2026-01-01T00:00:00Z
         let secs = 1767225600;
         assert_eq!(iso8601_from_unix(secs), "2026-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn corrupt_inbox_cache_is_treated_as_missing() {
+        // read_json under cache.rs returns Ok(None) on parse failure. We assert behaviour at
+        // that seam without needing a real repo or gh — the production path then proceeds to
+        // a live fetch.
+        let dir =
+            std::env::temp_dir().join(format!("review-desk-inbox-corrupt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("inbox.json");
+        std::fs::write(&path, b"{ not valid").unwrap();
+        let result: Result<Option<crate::github::types::InboxCache>, _> =
+            crate::app_data::read_json(&path);
+        assert!(matches!(result, Ok(None)));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

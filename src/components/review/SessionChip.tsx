@@ -9,7 +9,8 @@ export function SessionChip({ session, onClick }: Props) {
   const t = session.target;
   let body: React.ReactNode = null;
   switch (t.kind) {
-    case "pullRequest":
+    case "pullRequest": {
+      const headLabel = t.headSha ?? t.headRefName ?? t.headRef ?? "";
       body = (
         <>
           <span className="font-mono text-[12px] text-[var(--rd-vermillion-2)]">
@@ -19,11 +20,12 @@ export function SessionChip({ session, onClick }: Props) {
             {t.label}
           </span>
           <span className="font-mono text-[10px] text-[var(--rd-pencil)]">
-            {t.baseRef} ← {(t.headSha ?? t.headRef).slice(0, 7)}
+            {t.baseRef ?? ""} ← {headLabel.slice(0, 7)}
           </span>
         </>
       );
       break;
+    }
     case "branch":
       body = (
         <>

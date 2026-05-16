@@ -241,10 +241,7 @@ mod tests {
         let repo = Path::new("/tmp/example-clone");
         let path = workspace_state_dir(repo).unwrap();
         let key = repo_storage_key(repo);
-        assert_eq!(
-            path,
-            dir.join("repos").join(&key).join("workspace-state")
-        );
+        assert_eq!(path, dir.join("repos").join(&key).join("workspace-state"));
         std::env::remove_var("REVIEW_DESK_DATA_DIR");
         fs::remove_dir_all(&dir).unwrap();
     }

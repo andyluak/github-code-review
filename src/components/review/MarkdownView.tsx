@@ -18,7 +18,8 @@ type InlineToken =
   | { kind: "code"; value: string }
   | { kind: "strong"; value: string }
   | { kind: "em"; value: string }
-  | { kind: "link"; label: string; href: string };
+  | { kind: "link"; label: string; href: string }
+  | { kind: "image"; alt: string; src: string };
 
 export function MarkdownView({
   children,
@@ -26,7 +27,7 @@ export function MarkdownView({
   compact = false,
   disableLinks = false,
 }: MarkdownViewProps) {
-  const blocks = parseBlocks(children);
+  const blocks = parseBlocks(normalizeMarkdownForDisplay(children));
 
   return (
     <div
@@ -193,6 +194,71 @@ function parseBlocks(value: string): MarkdownBlock[] {
   return blocks.length > 0 ? blocks : [{ kind: "paragraph", value }];
 }
 
+function normalizeMarkdownForDisplay(value: string): string {
+  return polishLinearSections(
+    decodeHtmlEntities(
+      value
+        .replace(/\r\n?/g, "\n")
+        .replace(/<!--[\s\S]*?-->/g, "")
+        .replace(
+          /<a\b[^>]*href=(["'])(.*?)\1[^>]*>([\s\S]*?)<\/a>/gi,
+          (_match, _quote, href: string, label: string) =>
+            `[${cleanHtmlText(label)}](${decodeHtmlEntities(href)})`,
+        )
+        .replace(/<summary\b[^>]*>([\s\S]*?)<\/summary>/gi, (_match, label) =>
+          `\n\n### ${cleanHtmlText(label)}\n\n`,
+        )
+        .replace(/<\/p>\s*<p\b[^>]*>/gi, "\n\n")
+        .replace(/<p\b[^>]*>/gi, "\n\n")
+        .replace(/<\/p>/gi, "\n\n")
+        .replace(/<br\s*\/?>/gi, "\n")
+        .replace(/<li\b[^>]*>/gi, "\n- ")
+        .replace(/<\/li>/gi, "\n")
+        .replace(/<\/?(?:details|ul|ol|blockquote|div|span)\b[^>]*>/gi, "\n\n")
+        .replace(/<strong\b[^>]*>([\s\S]*?)<\/strong>/gi, "**$1**")
+        .replace(/<b\b[^>]*>([\s\S]*?)<\/b>/gi, "**$1**")
+        .replace(/<em\b[^>]*>([\s\S]*?)<\/em>/gi, "*$1*")
+        .replace(/<i\b[^>]*>([\s\S]*?)<\/i>/gi, "*$1*")
+        .replace(/<code\b[^>]*>([\s\S]*?)<\/code>/gi, "`$1`")
+        .replace(/\[([^\]]+)\]\(<(https?:\/\/[^>\s]+)>\)/g, "[$1]($2)")
+        .replace(/<((?:https?:\/\/)[^>\s]+)>/g, "[$1]($1)")
+        .replace(/<\/?[A-Za-z][A-Za-z0-9-]*(?:\s+[^<>]*)?>/g, ""),
+    ),
+  )
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function polishLinearSections(value: string): string {
+  return value
+    .replace(
+      /(^|\s)\*\*(Problem|Current behavior|Expected behavior|Implementation|References)\*\*\s*/g,
+      "\n\n### $2\n",
+    )
+    .replace(/\s+\*\s+(?=[A-Za-z0-9`])/g, "\n- ")
+    .replace(/\s+(\d+\.)\s+(?=[A-Z`])/g, "\n$1 ");
+}
+
+function cleanHtmlText(value: string): string {
+  return decodeHtmlEntities(
+    value
+      .replace(/<\/?[A-Za-z][A-Za-z0-9-]*(?:\s+[^<>]*)?>/g, "")
+      .replace(/\s+/g, " ")
+      .trim(),
+  );
+}
+
+function decodeHtmlEntities(value: string): string {
+  return value
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
+}
+
 function renderInline(value: string, disableLinks: boolean): ReactNode[] {
   return tokenizeInline(value).map((token, index) => {
     if (token.kind === "code") {
@@ -221,17 +287,48 @@ function renderInline(value: string, disableLinks: boolean): ReactNode[] {
     }
     if (token.kind === "link") {
       if (disableLinks) {
-        return <Fragment key={index}>{token.label}</Fragment>;
+        return (
+          <Fragment key={index}>
+            {linkLabelForDisplay(token.label, token.href)}
+          </Fragment>
+        );
       }
       return (
         <a
           key={index}
           href={token.href}
+          title={token.href}
           target="_blank"
           rel="noreferrer"
           className="text-[var(--rd-vermillion-2)] underline underline-offset-2"
         >
-          {token.label}
+          {linkLabelForDisplay(token.label, token.href)}
+        </a>
+      );
+    }
+    if (token.kind === "image") {
+      if (disableLinks) {
+        return (
+          <Fragment key={index}>
+            {token.alt ? `[image: ${token.alt}]` : "[image]"}
+          </Fragment>
+        );
+      }
+      return (
+        <a
+          key={index}
+          href={token.src}
+          title={token.alt || token.src}
+          target="_blank"
+          rel="noreferrer"
+          className="my-2 block overflow-hidden rounded-md border border-[var(--rd-hair)] bg-[var(--rd-ink-3)]"
+        >
+          <img
+            src={token.src}
+            alt={token.alt || "Attached image"}
+            loading="lazy"
+            className="max-h-64 w-full object-contain"
+          />
         </a>
       );
     }
@@ -239,10 +336,23 @@ function renderInline(value: string, disableLinks: boolean): ReactNode[] {
   });
 }
 
+function linkLabelForDisplay(label: string, href: string): string {
+  if (label !== href) return label;
+
+  try {
+    const url = new URL(href);
+    const path = `${url.pathname}${url.hash}`.replace(/\/$/, "");
+    if (!path || path === "/") return url.hostname;
+    return `${url.hostname}${path}`;
+  } catch {
+    return label;
+  }
+}
+
 function tokenizeInline(value: string): InlineToken[] {
   const tokens: InlineToken[] = [];
   const pattern =
-    /(`([^`]+)`)|(\*\*([^*]+)\*\*)|(\*([^*]+)\*)|(\[([^\]]+)\]\((https?:\/\/[^)\s]+)\))/g;
+    /(!\[([^\]]*)\]\(<?(https?:\/\/[^)>\s]+)>?(?:\s+"[^"]*")?\))|(`([^`]+)`)|(\*\*([^*]+)\*\*)|(\*([^*]+)\*)|(\[([^\]]+)\]\(<?(https?:\/\/[^)>\s]+)>?\))/g;
   let lastIndex = 0;
   let match: RegExpExecArray | null;
 
@@ -251,14 +361,16 @@ function tokenizeInline(value: string): InlineToken[] {
       tokens.push({ kind: "text", value: value.slice(lastIndex, match.index) });
     }
 
-    if (match[2]) {
-      tokens.push({ kind: "code", value: match[2] });
-    } else if (match[4]) {
-      tokens.push({ kind: "strong", value: match[4] });
-    } else if (match[6]) {
-      tokens.push({ kind: "em", value: match[6] });
-    } else if (match[8] && match[9]) {
-      tokens.push({ kind: "link", label: match[8], href: match[9] });
+    if (match[2] !== undefined && match[3]) {
+      tokens.push({ kind: "image", alt: match[2], src: match[3] });
+    } else if (match[5]) {
+      tokens.push({ kind: "code", value: match[5] });
+    } else if (match[7]) {
+      tokens.push({ kind: "strong", value: match[7] });
+    } else if (match[9]) {
+      tokens.push({ kind: "em", value: match[9] });
+    } else if (match[11] && match[12]) {
+      tokens.push({ kind: "link", label: match[11], href: match[12] });
     }
 
     lastIndex = pattern.lastIndex;

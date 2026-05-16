@@ -325,6 +325,21 @@ struct PullRequestSummary {
     head_ref_oid: String,
     url: String,
     state: String,
+    head_repository: Option<PullRequestHeadRepository>,
+    head_repository_owner: Option<PullRequestHeadRepositoryOwner>,
+    is_cross_repository: Option<bool>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct PullRequestHeadRepository {
+    name: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct PullRequestHeadRepositoryOwner {
+    login: String,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -354,6 +369,12 @@ enum ReviewTarget {
         base_ref: String,
         head_ref: String,
         label: String,
+        head_sha: Option<String>,
+        head_ref_name: Option<String>,
+        base_ref_name: Option<String>,
+        head_repo_owner: Option<String>,
+        head_repo_name: Option<String>,
+        is_cross_repository: Option<bool>,
     },
 }
 
@@ -1478,10 +1499,50 @@ fn list_remotes(repo_root: &Path) -> Result<Vec<GitRemote>, String> {
     Ok(remotes)
 }
 
+fn remote_name_matching_pr_url(repo_root: &Path, pr_url: &str) -> Option<String> {
+    let pr_repo = parse_owner_repo_from_pr_url(pr_url)?;
+    let remotes = list_remotes(repo_root).ok()?;
+    remotes
+        .iter()
+        .find(|remote| {
+            crate::github::remote::parse_github_remote(&remote.url)
+                .map(|gh| {
+                    gh.owner.eq_ignore_ascii_case(&pr_repo.0)
+                        && gh.repo.eq_ignore_ascii_case(&pr_repo.1)
+                })
+                .unwrap_or(false)
+        })
+        .map(|remote| remote.name.clone())
+}
+
+fn parse_owner_repo_from_pr_url(url: &str) -> Option<(String, String)> {
+    // Accepts https://github.com/OWNER/REPO/pull/N(/...)
+    let trimmed = url.trim();
+    let stripped = trimmed
+        .strip_prefix("https://github.com/")
+        .or_else(|| trimmed.strip_prefix("http://github.com/"))?;
+    let mut parts = stripped.split('/');
+    let owner = parts.next()?.to_string();
+    let repo = parts.next()?.trim_end_matches(".git").to_string();
+    if owner.is_empty() || repo.is_empty() {
+        return None;
+    }
+    Some((owner, repo))
+}
+
 fn default_remote_name(repo_root: &Path) -> Option<String> {
-    list_remotes(repo_root)
-        .ok()
-        .and_then(|remotes| remotes.into_iter().next().map(|remote| remote.name))
+    let remotes = list_remotes(repo_root).ok()?;
+    if remotes.is_empty() {
+        return None;
+    }
+    // Prefer the canonical upstream before origin so PR-ref fetches and base resolution
+    // land on the repo that hosts pull/<n>/head in fork-heavy checkouts.
+    for preferred in ["upstream", "origin"] {
+        if let Some(remote) = remotes.iter().find(|r| r.name == preferred) {
+            return Some(remote.name.clone());
+        }
+    }
+    remotes.into_iter().next().map(|remote| remote.name)
 }
 
 fn list_recent_commits(repo_root: &Path) -> Result<Vec<GitCommit>, String> {
@@ -1523,7 +1584,7 @@ fn list_pull_requests(repo_root: &Path) -> Result<Vec<PullRequestSummary>, Strin
             "--limit",
             "50",
             "--json",
-            "number,title,baseRefName,headRefName,headRefOid,url,state",
+            "number,title,baseRefName,headRefName,headRefOid,url,state,headRepository,headRepositoryOwner,isCrossRepository",
         ],
     )?;
     serde_json::from_str::<Vec<PullRequestSummary>>(&output)
@@ -1539,7 +1600,7 @@ fn gh_pr_view(repo_root: &Path, selector: &str) -> Result<PullRequestSummary, St
             "view",
             selector,
             "--json",
-            "number,title,baseRefName,headRefName,headRefOid,url,state",
+            "number,title,baseRefName,headRefName,headRefOid,url,state,headRepository,headRepositoryOwner,isCrossRepository",
         ],
     )?;
     serde_json::from_str::<PullRequestSummary>(&output)
@@ -1554,6 +1615,17 @@ fn fetch_pull_request_head(repo_root: &Path, remote: &str, number: u64) -> Resul
 }
 
 fn best_base_ref(repo_root: &Path, remote: &str, base: &str) -> String {
+    // Prefer fully-qualified refs to dodge the ambiguity between
+    // `refs/heads/<remote>/<base>` and `refs/remotes/<remote>/<base>` that can break
+    // symmetric-difference expressions in `git diff a...b`.
+    let qualified_remote = format!("refs/remotes/{remote}/{base}");
+    if git_ref_exists(repo_root, &qualified_remote) {
+        return qualified_remote;
+    }
+    let qualified_local = format!("refs/heads/{base}");
+    if git_ref_exists(repo_root, &qualified_local) {
+        return qualified_local;
+    }
     let remote_base = format!("{remote}/{base}");
     if git_ref_exists(repo_root, &remote_base) {
         return remote_base;
@@ -1737,30 +1809,70 @@ fn resolve_pull_request_target(
     head_ref: Option<String>,
 ) -> Result<ResolvedTarget, String> {
     let pr_number = number.or_else(|| url.as_deref().and_then(parse_pr_number));
+
+    let metadata_selector = match (&url, pr_number) {
+        (Some(pr_url), _) if !pr_url.trim().is_empty() => Some(pr_url.trim().to_string()),
+        (_, Some(number)) => Some(number.to_string()),
+        _ => None,
+    };
+    let (metadata, metadata_error) = match metadata_selector.as_deref() {
+        Some(selector) => match gh_pr_view(repo_root, selector) {
+            Ok(pr) => (Some(pr), None),
+            Err(error) => (
+                None,
+                Some(format!(
+                    "Failed to load GitHub pull request metadata for {selector}: {error}"
+                )),
+            ),
+        },
+        None => (None, None),
+    };
+
+    let pr_url_resolved = url
+        .clone()
+        .or_else(|| metadata.as_ref().map(|pr| pr.url.clone()));
+    // Prefer the remote whose URL matches the PR's BASE repo (parsed from the PR URL).
+    // GitHub serves `pull/<n>/head` from the base repo, so fetching from any other remote
+    // (e.g. a contributor fork) will not produce the SHA we need.
     let remote_name = remote
         .and_then(|value| clean_optional(&value))
+        .or_else(|| {
+            pr_url_resolved
+                .as_deref()
+                .and_then(|pr_url| remote_name_matching_pr_url(repo_root, pr_url))
+        })
         .or_else(|| default_remote_name(repo_root))
         .unwrap_or_else(|| "origin".to_string());
 
-    let metadata = match (&url, pr_number) {
-        (Some(pr_url), _) if !pr_url.trim().is_empty() => gh_pr_view(repo_root, pr_url.trim()).ok(),
-        (_, Some(number)) => gh_pr_view(repo_root, &number.to_string()).ok(),
-        _ => None,
-    };
-
     let base = clean_optional(base_ref.as_deref().unwrap_or_default())
         .or_else(|| metadata.as_ref().map(|pr| pr.base_ref_name.clone()))
-        .ok_or_else(|| "Pull request target needs a base ref".to_string())?;
+        .ok_or_else(|| {
+            if let Some(error) = metadata_error.as_deref() {
+                format!("Pull request target needs a base ref. {error}")
+            } else {
+                "Pull request target needs a base ref".to_string()
+            }
+        })?;
     let number = pr_number.or_else(|| metadata.as_ref().map(|pr| pr.number));
-    let pr_url = url.or_else(|| metadata.as_ref().map(|pr| pr.url.clone()));
+    let pr_url = pr_url_resolved;
 
     let head = if let Some(number) = number {
-        fetch_pull_request_head(repo_root, &remote_name, number).or_else(|_| {
-            metadata
-                .as_ref()
-                .map(|pr| pr.head_ref_oid.clone())
-                .ok_or_else(|| "Failed to resolve pull request head".to_string())
-        })?
+        match fetch_pull_request_head(repo_root, &remote_name, number) {
+            Ok(local_ref) => local_ref,
+            Err(fetch_error) => {
+                // Falling back to the raw GitHub SHA only helps if the object is locally
+                // resolvable. Otherwise downstream `git diff` will explode on an unknown rev.
+                let candidate = metadata
+                    .as_ref()
+                    .map(|pr| pr.head_ref_oid.clone())
+                    .filter(|sha| git_ref_exists(repo_root, sha));
+                candidate.ok_or_else(|| {
+                    format!(
+                        "Failed to fetch pull request #{number} from `{remote_name}`: {fetch_error}"
+                    )
+                })?
+            }
+        }
     } else {
         clean_optional(head_ref.as_deref().unwrap_or_default())
             .or_else(|| metadata.as_ref().map(|pr| pr.head_ref_oid.clone()))
@@ -1773,6 +1885,33 @@ fn resolve_pull_request_target(
         .map(|value| format!("PR #{value}: {base}...{head}"))
         .unwrap_or_else(|| format!("PR: {base}...{head}"));
 
+    let head_sha = metadata
+        .as_ref()
+        .map(|pr| pr.head_ref_oid.clone())
+        .filter(|sha| !sha.trim().is_empty())
+        .or_else(|| {
+            git_stdout(repo_root, &["rev-parse", &head])
+                .ok()
+                .map(|sha| sha.trim().to_string())
+                .filter(|sha| !sha.is_empty())
+        });
+    if head_sha.is_none() {
+        if let Some(error) = metadata_error {
+            return Err(format!("Failed to resolve pull request head SHA. {error}"));
+        }
+    }
+    let head_ref_name = metadata.as_ref().map(|pr| pr.head_ref_name.clone());
+    let base_ref_name_meta = metadata.as_ref().map(|pr| pr.base_ref_name.clone());
+    let head_repo_owner = metadata
+        .as_ref()
+        .and_then(|pr| pr.head_repository_owner.as_ref())
+        .map(|owner| owner.login.clone());
+    let head_repo_name = metadata
+        .as_ref()
+        .and_then(|pr| pr.head_repository.as_ref())
+        .map(|repo| repo.name.clone());
+    let is_cross_repository = metadata.as_ref().and_then(|pr| pr.is_cross_repository);
+
     Ok(ResolvedTarget {
         target: ReviewTarget::PullRequest {
             remote: Some(remote_name.clone()),
@@ -1781,6 +1920,12 @@ fn resolve_pull_request_target(
             base_ref: base_for_diff.clone(),
             head_ref: head.clone(),
             label,
+            head_sha,
+            head_ref_name,
+            base_ref_name: base_ref_name_meta,
+            head_repo_owner,
+            head_repo_name,
+            is_cross_repository,
         },
         diff_target: Some(diff_target),
         session_key: number

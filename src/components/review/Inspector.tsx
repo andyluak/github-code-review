@@ -24,6 +24,13 @@ import {
   type LedgerFilter,
 } from "@/lib/ledger";
 import { MarkdownPreview } from "@/components/review/MarkdownView";
+import {
+  InspectorTabs,
+  type InspectorTab,
+} from "@/components/review/InspectorTabs";
+import { ConversationsList } from "@/components/review/ConversationsList";
+import { ActivityList } from "@/components/review/ActivityList";
+import type { PullRequestContext } from "@/types/github";
 import type {
   ReviewFile,
   ReviewSession,
@@ -51,6 +58,10 @@ type InspectorProps = {
   onPatchFileState: (fileId: string, patch: Partial<SessionFileState>) => void;
   onMarkViewed: () => void;
   onMarkReviewed: () => void;
+  onPublishReview?: () => void;
+  prContext?: PullRequestContext | null;
+  prContextError?: string | null;
+  onJumpToThread?: (target: { path: string; line: number }) => void;
 };
 
 export function Inspector(props: InspectorProps) {
@@ -66,6 +77,8 @@ export function Inspector(props: InspectorProps) {
   } = props;
   const scrollViewportRef = useRef<HTMLDivElement | null>(null);
   const supportsReviewComments = session.target.kind === "pullRequest";
+  const [tab, setTab] = useState<InspectorTab>("notes");
+  const prContext = props.prContext ?? null;
 
   const ledger = useMemo(
     () => collectLedger(session, workspaceState),
@@ -105,44 +118,63 @@ export function Inspector(props: InspectorProps) {
 
   return (
     <aside className="flex h-full min-h-0 flex-col border-l border-[var(--rd-hair)] bg-[var(--rd-ink)]">
-      <ScrollArea className="min-h-0 flex-1" viewportRef={scrollViewportRef}>
-        <div className="px-4 pb-6 pt-5">
-          {file ? (
-            <>
-              <NotesSection
-                file={file}
-                fileState={fileState}
-                onPatch={onPatchFileState}
-              />
-              {supportsReviewComments ? (
-                <>
-                  <SectionDivider />
-                  <ReplySection
-                    file={file}
-                    fileState={fileState}
-                    onPatch={onPatchFileState}
-                  />
-                </>
-              ) : null}
-              <SectionDivider />
-              <ContextSection session={session} file={file} />
-              <SectionDivider />
-              <LedgerSection
-                session={session}
-                ledger={ledger}
-                currentFileId={file.id}
-                supportsReviewComments={supportsReviewComments}
-                onJumpToNote={onJumpToNote}
-              />
-              <SessionWarnings session={session} />
-            </>
-          ) : (
-            <EmptyFilePrompt />
-          )}
-        </div>
-      </ScrollArea>
+      {supportsReviewComments ? (
+        <InspectorTabs
+          tab={tab}
+          show={{ conversations: true, activity: true }}
+          onChange={setTab}
+        />
+      ) : null}
+      {tab === "notes" || !supportsReviewComments ? (
+        <ScrollArea className="min-h-0 flex-1" viewportRef={scrollViewportRef}>
+          <div className="px-4 pb-6 pt-5">
+            {file ? (
+              <>
+                <NotesSection
+                  file={file}
+                  fileState={fileState}
+                  onPatch={onPatchFileState}
+                />
+                {supportsReviewComments ? (
+                  <>
+                    <SectionDivider />
+                    <ReplySection
+                      file={file}
+                      fileState={fileState}
+                      onPatch={onPatchFileState}
+                    />
+                  </>
+                ) : null}
+                <SectionDivider />
+                <ContextSection session={session} file={file} />
+                <SectionDivider />
+                <LedgerSection
+                  session={session}
+                  ledger={ledger}
+                  currentFileId={file.id}
+                  supportsReviewComments={supportsReviewComments}
+                  onJumpToNote={onJumpToNote}
+                />
+                <SessionWarnings session={session} />
+              </>
+            ) : (
+              <EmptyFilePrompt />
+            )}
+          </div>
+        </ScrollArea>
+      ) : tab === "conversations" ? (
+        <ConversationsList
+          prContext={prContext}
+          error={props.prContextError}
+          onJump={(target) => props.onJumpToThread?.(target)}
+        />
+      ) : (
+        <ActivityList prContext={prContext} error={props.prContextError} />
+      )}
 
-      {supportsReviewComments ? <BasketFooter basket={basket} /> : null}
+      {supportsReviewComments ? (
+        <BasketFooter basket={basket} onPublishReview={props.onPublishReview} />
+      ) : null}
     </aside>
   );
 }
@@ -669,8 +701,10 @@ function SessionWarnings({ session }: { session: ReviewSession }) {
 
 const BasketFooter = memo(function BasketFooter({
   basket,
+  onPublishReview,
 }: {
   basket: LedgerEntry[];
+  onPublishReview?: () => void;
 }) {
   return (
     <div className="border-t border-[var(--rd-hair)]">
@@ -711,7 +745,8 @@ const BasketFooter = memo(function BasketFooter({
         <Button
           type="button"
           className="h-8 w-full rounded-md bg-[var(--rd-cream)] text-[12px] font-medium text-[var(--rd-ink)] hover:bg-white disabled:bg-[var(--rd-ink-3)] disabled:text-[var(--rd-pencil)]"
-          disabled={basket.length === 0}
+          disabled={!onPublishReview}
+          onClick={onPublishReview}
         >
           <Send className="size-3.5" />
           Publish Review

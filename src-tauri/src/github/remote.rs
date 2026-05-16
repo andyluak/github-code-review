@@ -1,6 +1,8 @@
 use std::path::Path;
 use std::process::Command;
 
+use serde::Deserialize;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitHubRepoRef {
     pub owner: String,
@@ -52,10 +54,14 @@ pub fn read_default_remote_url(repo_root: &Path) -> Result<String, String> {
         return Err(String::from_utf8_lossy(&output.stderr).to_string());
     }
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    // Prefer `origin` fetch URL; otherwise the first fetch URL.
+    pick_default_remote_url(&stdout).ok_or_else(|| "No git remotes configured".to_string())
+}
+
+fn pick_default_remote_url(remote_output: &str) -> Option<String> {
     let mut origin_fetch: Option<String> = None;
+    let mut upstream_fetch: Option<String> = None;
     let mut first_fetch: Option<String> = None;
-    for line in stdout.lines() {
+    for line in remote_output.lines() {
         let mut parts = line.split_whitespace();
         let Some(name) = parts.next() else { continue };
         let Some(url) = parts.next() else { continue };
@@ -66,19 +72,63 @@ pub fn read_default_remote_url(repo_root: &Path) -> Result<String, String> {
         if first_fetch.is_none() {
             first_fetch = Some(url.to_string());
         }
+        if name == "upstream" {
+            upstream_fetch = Some(url.to_string());
+        }
         if name == "origin" {
             origin_fetch = Some(url.to_string());
         }
     }
-    origin_fetch
-        .or(first_fetch)
-        .ok_or_else(|| "No git remotes configured".to_string())
+    upstream_fetch.or(origin_fetch).or(first_fetch)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GhRepoView {
+    name_with_owner: String,
+}
+
+fn parse_repo_view(body: &str) -> Result<GitHubRepoRef, String> {
+    let view: GhRepoView = serde_json::from_str(body)
+        .map_err(|error| format!("Failed to parse gh repo view: {error}"))?;
+    let (owner, repo) = view
+        .name_with_owner
+        .split_once('/')
+        .ok_or_else(|| format!("Invalid GitHub repo name: {}", view.name_with_owner))?;
+    if owner.is_empty() || repo.is_empty() {
+        return Err(format!(
+            "Invalid GitHub repo name: {}",
+            view.name_with_owner
+        ));
+    }
+    Ok(GitHubRepoRef {
+        owner: owner.to_string(),
+        repo: repo.to_string(),
+    })
+}
+
+fn read_gh_repo_view(repo_root: &Path) -> Result<GitHubRepoRef, String> {
+    let output = Command::new("gh")
+        .current_dir(repo_root)
+        .arg("repo")
+        .arg("view")
+        .arg("--json")
+        .arg("nameWithOwner")
+        .output()
+        .map_err(|error| format!("Failed to run gh repo view: {error}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    parse_repo_view(&String::from_utf8_lossy(&output.stdout))
 }
 
 pub fn resolve_github_repo(repo_root: &Path) -> Result<GitHubRepoRef, String> {
+    if let Ok(repo) = read_gh_repo_view(repo_root) {
+        return Ok(repo);
+    }
+
     let url = read_default_remote_url(repo_root)?;
-    parse_github_remote(&url)
-        .ok_or_else(|| format!("Remote URL is not a GitHub repo: {url}"))
+    parse_github_remote(&url).ok_or_else(|| format!("Remote URL is not a GitHub repo: {url}"))
 }
 
 #[cfg(test)]
@@ -115,5 +165,26 @@ mod tests {
     fn rejects_empty_segments() {
         assert_eq!(parse_github_remote("git@github.com:/bar.git"), None);
         assert_eq!(parse_github_remote("git@github.com:foo/.git"), None);
+    }
+
+    #[test]
+    fn parses_gh_repo_view_name_with_owner() {
+        let repo = parse_repo_view(r#"{"nameWithOwner":"loft-sh/loft-enterprise"}"#).unwrap();
+        assert_eq!(repo.owner, "loft-sh");
+        assert_eq!(repo.repo, "loft-enterprise");
+    }
+
+    #[test]
+    fn default_remote_prefers_upstream_before_origin() {
+        let output = "\
+origin\thttps://github.com/me/fork.git (fetch)
+origin\thttps://github.com/me/fork.git (push)
+upstream\thttps://github.com/org/repo.git (fetch)
+upstream\thttps://github.com/org/repo.git (push)
+";
+        assert_eq!(
+            pick_default_remote_url(output).as_deref(),
+            Some("https://github.com/org/repo.git")
+        );
     }
 }

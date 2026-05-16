@@ -35,12 +35,10 @@ function partition(
   );
   const recent: GhPullRequestSummary[] = [];
   const seen = new Set<number>(all.map((pr) => pr.number));
-  const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
   for (const item of history) {
     if (item.target.kind !== "pullRequest") continue;
     const number = item.target.number ?? null;
     if (!number || seen.has(number)) continue;
-    if (new Date(item.lastRefreshedAt).getTime() < cutoff) continue;
     recent.push(historyToSummary(item, number));
     seen.add(number);
     if (recent.length >= 10) break;
@@ -124,6 +122,7 @@ export function PullRequestsTab(props: Props) {
     }
     return out;
   }, [sections]);
+  const hasRows = sections.some((section) => section.rows.length > 0);
 
   const virtualizer = useVirtualizer({
     count: flatRows.length,
@@ -131,6 +130,16 @@ export function PullRequestsTab(props: Props) {
     estimateSize: (index) => (flatRows[index].kind === "header" ? 32 : 56),
     overscan: 12,
   });
+
+  if (!hasRows) {
+    return (
+      <div className="flex min-h-0 flex-1 items-center justify-center px-5 text-center font-mono text-[11px] leading-snug text-[var(--rd-pencil)]">
+        {searchQuery.trim()
+          ? "No matching pull requests."
+          : "No assigned, review-requested, or recently reviewed pull requests for this repo."}
+      </div>
+    );
+  }
 
   return (
     <div ref={parentRef} className="min-h-0 flex-1 overflow-y-auto">

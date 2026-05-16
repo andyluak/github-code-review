@@ -290,7 +290,7 @@ pub fn fetch_pr_context(
         .data
         .repository
         .and_then(|r| r.pull_request)
-        .ok_or_else(|| format!("Pull request {number} not found"))?;
+        .ok_or_else(|| format!("Pull request {number} not found in {owner}/{repo}"))?;
     build_context_from_node(pr_node)
 }
 
@@ -373,9 +373,7 @@ fn build_context_from_node(node: PullRequestNode) -> Result<PullRequestContext, 
                                         .as_ref()
                                         .map(|a| a.login.clone())
                                         .unwrap_or_default(),
-                                    author_avatar_url: n
-                                        .author
-                                        .and_then(|a| a.avatar_url),
+                                    author_avatar_url: n.author.and_then(|a| a.avatar_url),
                                     body: n.body,
                                     created_at: n.created_at,
                                     updated_at: n.updated_at,
@@ -422,7 +420,11 @@ fn build_context_from_node(node: PullRequestNode) -> Result<PullRequestContext, 
                     kind: "review".into(),
                     actor: n.author.map(|a| a.login).unwrap_or_default(),
                     created_at: n.created_at,
-                    body: if n.body.is_empty() { None } else { Some(n.body) },
+                    body: if n.body.is_empty() {
+                        None
+                    } else {
+                        Some(n.body)
+                    },
                     state: n.state,
                 })
                 .collect()

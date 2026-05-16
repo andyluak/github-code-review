@@ -68,7 +68,11 @@ export function SessionSwitcher(props: Props) {
     onPickTarget,
     onDismiss,
   } = props;
-  const hasGithubRemote = pullRequests.length > 0 || inboxFetchedAt !== null;
+  const hasGithubRemote =
+    pullRequests.length > 0 ||
+    inboxFetchedAt !== null ||
+    Boolean(inboxError) ||
+    isInboxLoading;
   const tabs = hasGithubRemote
     ? ALL_TABS
     : ALL_TABS.filter((t) => t !== "pullRequests");

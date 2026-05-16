@@ -94,6 +94,7 @@ export function createDefaultFileState(): SessionFileState {
     privateNote: "",
     publishableDraft: "",
     inlineComments: [],
+    threadReplies: {},
   };
 }
 
@@ -432,12 +433,36 @@ export function reconcileWorkspaceState(
   session: ReviewSession,
   state: ReviewWorkspaceState,
 ): ReviewWorkspaceState {
-  const next: ReviewWorkspaceState = { ...state };
+  const next: ReviewWorkspaceState = {};
+  const claimed = new Set<string>();
+
+  // Build lookup tables of prior state by path so rename/path-equality can carry forward.
+  const stateByPath = new Map<string, { fileId: string; value: SessionFileState }>();
+  for (const [fileId, value] of Object.entries(state)) {
+    if (!value) continue;
+    const previousFile = session.files.find((f) => f.id === fileId);
+    if (previousFile) {
+      stateByPath.set(previousFile.path, { fileId, value });
+    }
+  }
 
   for (const file of session.files) {
+    const candidateById = state[file.id];
+    const candidateByOldPath = file.oldPath
+      ? Object.entries(state).find(([_fileId, value]) => {
+          if (!value) return false;
+          const prev = session.files.find((f) => f.id === _fileId);
+          return prev?.path === file.oldPath;
+        })?.[1]
+      : undefined;
+    const candidateByPath = stateByPath.get(file.path)?.value;
+
+    const source: SessionFileState =
+      candidateById ?? candidateByOldPath ?? candidateByPath ?? createDefaultFileState();
+
     const previous = {
       ...createDefaultFileState(),
-      ...next[file.id],
+      ...source,
     };
     let status = previous.status;
 
@@ -455,8 +480,10 @@ export function reconcileWorkspaceState(
       status,
       lastPatchHash: file.patchHash,
     };
+    claimed.add(file.id);
   }
 
+  // Drop orphan entries — keep state lean once files leave the session.
   return next;
 }
 
@@ -503,6 +530,14 @@ function mergeFileState(
       currentState.inlineComments ?? [],
       recoveredState.inlineComments ?? [],
     ),
+    threadReplies: {
+      ...(recoveredState.threadReplies && typeof recoveredState.threadReplies === "object"
+        ? recoveredState.threadReplies
+        : {}),
+      ...(currentState.threadReplies && typeof currentState.threadReplies === "object"
+        ? currentState.threadReplies
+        : {}),
+    },
   };
 }
 
