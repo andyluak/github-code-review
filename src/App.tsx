@@ -5,9 +5,17 @@ import { CommandBar } from "@/components/review/CommandBar";
 import { DiffCanvas } from "@/components/review/DiffCanvas";
 import { EmptyState } from "@/components/review/EmptyState";
 import { Inspector } from "@/components/review/Inspector";
+import { PublishSheet } from "@/components/review/PublishSheet";
 import { ReviewMap } from "@/components/review/ReviewMap";
 import { ReviewRail } from "@/components/review/ReviewRail";
+import { SessionSwitcher } from "@/components/review/SessionSwitcher";
 import { Button } from "@/components/ui/button";
+import { useKeybinding } from "@/hooks/use-keybinding";
+import { usePrInbox } from "@/hooks/use-pr-inbox";
+import type {
+  PullRequestSummary as GhPullRequestSummary,
+  PublishReviewResponse,
+} from "@/types/github";
 import {
   ResizableHandle,
   ResizablePanel,
@@ -102,6 +110,20 @@ function App() {
   const [isRefsLoading, setIsRefsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [jumpTarget, setJumpTarget] = useState<JumpTarget | null>(null);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [publishOpen, setPublishOpen] = useState(false);
+  const inbox = usePrInbox(repoPath || null);
+  useKeybinding(
+    useMemo(
+      () => [
+        {
+          combo: "cmd+k",
+          handler: () => setPaletteOpen((v) => !v),
+        },
+      ],
+      [],
+    ),
+  );
   const refLoadId = useRef(0);
   const sessionLoadId = useRef(0);
   const diagramLoadId = useRef(0);
@@ -1156,9 +1178,78 @@ function App() {
             </ResizablePanel>
           </ResizablePanelGroup>
           )
+        ) : repoPath ? (
+          <div className="min-h-0 flex-1">
+            <SessionSwitcher
+              framing="home"
+              pullRequests={inbox.data?.pullRequests ?? []}
+              inboxFetchedAt={inbox.data?.fetchedAt ?? null}
+              isInboxLoading={inbox.isRefreshing}
+              inboxError={inbox.error}
+              history={reviewHistory}
+              workspaceByPr={{}}
+              repoRefs={repoRefs}
+              onRefreshInbox={inbox.refresh}
+              onPickPullRequest={(pr: GhPullRequestSummary) =>
+                void startSession({
+                  target: {
+                    kind: "pullRequest",
+                    number: pr.number,
+                    url: pr.url,
+                    baseRef: pr.baseRefName,
+                    headRef: null,
+                  },
+                })
+              }
+              onPickTarget={(target) => void startSession({ target })}
+            />
+          </div>
         ) : (
           <EmptyState onPickRepo={pickRepo} />
         )}
+        {paletteOpen && repoPath ? (
+          <div className="absolute inset-0 z-40 bg-black/40">
+            <SessionSwitcher
+              framing="palette"
+              pullRequests={inbox.data?.pullRequests ?? []}
+              inboxFetchedAt={inbox.data?.fetchedAt ?? null}
+              isInboxLoading={inbox.isRefreshing}
+              inboxError={inbox.error}
+              history={reviewHistory}
+              workspaceByPr={{}}
+              repoRefs={repoRefs}
+              onRefreshInbox={inbox.refresh}
+              onPickPullRequest={(pr: GhPullRequestSummary) => {
+                setPaletteOpen(false);
+                void startSession({
+                  target: {
+                    kind: "pullRequest",
+                    number: pr.number,
+                    url: pr.url,
+                    baseRef: pr.baseRefName,
+                    headRef: null,
+                  },
+                });
+              }}
+              onPickTarget={(target) => {
+                setPaletteOpen(false);
+                void startSession({ target });
+              }}
+              onDismiss={() => setPaletteOpen(false)}
+            />
+          </div>
+        ) : null}
+        {session && session.target.kind === "pullRequest" ? (
+          <PublishSheet
+            open={publishOpen}
+            session={session}
+            workspaceState={workspaceState}
+            onClose={() => setPublishOpen(false)}
+            onPublished={(_response: PublishReviewResponse) => {
+              void inbox.refresh();
+            }}
+          />
+        ) : null}
       </main>
     </TooltipProvider>
   );

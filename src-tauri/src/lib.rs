@@ -1,3 +1,5 @@
+mod app_data;
+mod github;
 mod review;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -22,7 +24,15 @@ pub fn run() {
             review::open_review_file,
             review::save_review_diagram,
             review::save_review_workspace_state,
-            review::save_text_file
+            review::save_text_file,
+            github::auth::get_github_viewer,
+            github::inbox::list_my_pull_requests,
+            github::context::load_pull_request_context,
+            github::refresh::refresh_pull_request_head,
+            github::publish::publish_pull_request_review,
+            github::merge::merge_pull_request,
+            github::prefs::get_repo_prefs,
+            github::prefs::set_repo_prefs
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

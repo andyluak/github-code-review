@@ -146,6 +146,12 @@ export type ReviewTarget =
       baseRef: string;
       headRef: string;
       label: string;
+      headSha?: string | null;
+      headRefName?: string | null;
+      baseRefName?: string | null;
+      headRepoOwner?: string | null;
+      headRepoName?: string | null;
+      isCrossRepository?: boolean | null;
     };
 
 export type RepoSummary = {
@@ -330,6 +336,7 @@ export type SessionFileState = {
   privateNote: string;
   publishableDraft: string;
   inlineComments: InlineComment[];
+  threadReplies?: Record<string, string>;
 };
 
 export type ReviewWorkspaceState = Record<string, SessionFileState>;

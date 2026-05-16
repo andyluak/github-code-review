@@ -1139,59 +1139,11 @@ fn legacy_global_active_review_session_path() -> Option<PathBuf> {
 }
 
 fn review_desk_data_dir() -> Option<PathBuf> {
-    if let Some(path) = env::var_os("REVIEW_DESK_DATA_DIR") {
-        return Some(PathBuf::from(path));
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        return env::var_os("HOME").map(|home| {
-            PathBuf::from(home)
-                .join("Library")
-                .join("Application Support")
-                .join("Review Desk")
-        });
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        if let Some(app_data) = env::var_os("APPDATA") {
-            return Some(PathBuf::from(app_data).join("Review Desk"));
-        }
-        return env::var_os("USERPROFILE").map(|home| {
-            PathBuf::from(home)
-                .join("AppData")
-                .join("Roaming")
-                .join("Review Desk")
-        });
-    }
-
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    {
-        if let Some(state_home) = env::var_os("XDG_STATE_HOME") {
-            return Some(PathBuf::from(state_home).join("review-desk"));
-        }
-        env::var_os("HOME").map(|home| {
-            PathBuf::from(home)
-                .join(".local")
-                .join("state")
-                .join("review-desk")
-        })
-    }
+    crate::app_data::review_desk_data_dir()
 }
 
 fn repo_storage_key(repo_root: &Path) -> String {
-    let repo_name = repo_root
-        .file_name()
-        .and_then(|name| name.to_str())
-        .map(slug)
-        .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| "repo".to_string());
-    format!(
-        "{}-{:016x}",
-        repo_name,
-        fnv1a64(repo_root.display().to_string().as_bytes())
-    )
+    crate::app_data::repo_storage_key(repo_root)
 }
 
 fn resolve_manifest_path(repo_root: &Path, manifest_path: &str) -> PathBuf {
@@ -1413,6 +1365,10 @@ pub fn list_review_refs(request: ListReviewRefsRequest) -> Result<RepoRefs, Stri
 fn repo_root(path: &str) -> Result<PathBuf, String> {
     let output = git_stdout(Path::new(path), &["rev-parse", "--show-toplevel"])?;
     Ok(PathBuf::from(output.trim()))
+}
+
+pub fn resolve_repo_root(path: &str) -> Result<PathBuf, String> {
+    repo_root(path)
 }
 
 fn safe_relative_review_path(path: &str) -> Result<PathBuf, String> {
@@ -2208,32 +2164,7 @@ fn file_id(path: &str) -> String {
     format!("file-{:x}", hasher.finish())
 }
 
-fn slug(value: &str) -> String {
-    let slug = value
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() {
-                character.to_ascii_lowercase()
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>();
-    slug.trim_matches('-')
-        .split('-')
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join("-")
-}
-
-fn fnv1a64(bytes: &[u8]) -> u64 {
-    let mut hash = 0xcbf29ce484222325_u64;
-    for byte in bytes {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    hash
-}
+// `slug` and `fnv1a64` moved to crate::app_data.
 
 fn session_id(repo_root: &Path, session_key: &str) -> String {
     let mut hasher = DefaultHasher::new();
