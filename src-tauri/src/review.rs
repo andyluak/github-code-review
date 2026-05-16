@@ -95,6 +95,22 @@ pub struct SaveReviewWorkspaceStateRequest {
     state: serde_json::Value,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoadReviewDiagramRequest {
+    repo_path: String,
+    session_id: String,
+    #[serde(default)]
+    scope: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveReviewDiagramRequest {
+    repo_path: String,
+    diagram: serde_json::Value,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReviewSession {
@@ -777,6 +793,60 @@ pub fn save_review_workspace_state(request: SaveReviewWorkspaceStateRequest) -> 
     write_json_file(&state_path, &request.state)
 }
 
+#[tauri::command]
+pub fn load_review_diagram(
+    request: LoadReviewDiagramRequest,
+) -> Result<Option<serde_json::Value>, String> {
+    let repo_root = repo_root(&request.repo_path)?;
+    let diagram_path = if let Some(scope) = request.scope.as_deref() {
+        let scope = validate_diagram_scope(scope)?;
+        let path = review_diagram_path(&repo_root, &request.session_id, scope)?;
+        if !path.exists() {
+            return Ok(None);
+        }
+        path
+    } else {
+        let Some(path) = latest_review_diagram_path(&repo_root, &request.session_id)? else {
+            return Ok(None);
+        };
+        path
+    };
+
+    let content = fs::read_to_string(&diagram_path).map_err(|error| {
+        format!(
+            "Failed to read review diagram {}: {error}",
+            diagram_path.display()
+        )
+    })?;
+    serde_json::from_str::<serde_json::Value>(&content)
+        .map(Some)
+        .map_err(|error| {
+            format!(
+                "Failed to parse review diagram {}: {error}",
+                diagram_path.display()
+            )
+        })
+}
+
+#[tauri::command]
+pub fn save_review_diagram(request: SaveReviewDiagramRequest) -> Result<serde_json::Value, String> {
+    let repo_root = repo_root(&request.repo_path)?;
+    let session_id = request
+        .diagram
+        .get("sessionId")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| "Review diagram is missing sessionId".to_string())?;
+    let scope = request
+        .diagram
+        .get("scope")
+        .and_then(|value| value.as_str())
+        .unwrap_or("session");
+    let scope = validate_diagram_scope(scope)?;
+    let diagram_path = review_diagram_path(&repo_root, session_id, scope)?;
+    write_json_file(&diagram_path, &request.diagram)?;
+    Ok(request.diagram)
+}
+
 fn import_review_session_from_path(manifest_path: PathBuf) -> Result<ReviewSession, String> {
     let manifest_content = fs::read_to_string(&manifest_path).map_err(|error| {
         format!(
@@ -975,7 +1045,73 @@ fn review_workspace_state_path(repo_root: &Path, session_id: &str) -> Result<Pat
         .join(session_file_name))
 }
 
+fn review_diagram_path(repo_root: &Path, session_id: &str, scope: &str) -> Result<PathBuf, String> {
+    let diagram_file_name = review_diagram_file_name(session_id, scope)?;
+    Ok(review_diagrams_dir(repo_root)?.join(diagram_file_name))
+}
+
+fn review_diagrams_dir(repo_root: &Path) -> Result<PathBuf, String> {
+    let Some(data_dir) = review_desk_data_dir() else {
+        return Err("Review Desk app data directory is unavailable".to_string());
+    };
+    Ok(data_dir
+        .join("repos")
+        .join(repo_storage_key(repo_root))
+        .join("diagrams"))
+}
+
+fn latest_review_diagram_path(
+    repo_root: &Path,
+    session_id: &str,
+) -> Result<Option<PathBuf>, String> {
+    let session_prefix = format!("{}-", workspace_state_session_id(session_id)?);
+    let diagrams_dir = review_diagrams_dir(repo_root)?;
+    if !diagrams_dir.exists() {
+        return Ok(None);
+    }
+
+    let mut candidates = Vec::new();
+    for entry in fs::read_dir(&diagrams_dir).map_err(|error| {
+        format!(
+            "Failed to read diagrams directory {}: {error}",
+            diagrams_dir.display()
+        )
+    })? {
+        let entry = entry.map_err(|error| {
+            format!(
+                "Failed to read diagrams directory entry {}: {error}",
+                diagrams_dir.display()
+            )
+        })?;
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if !name.starts_with(&session_prefix) || !name.ends_with(".review-diagram.json") {
+            continue;
+        }
+        let modified = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok();
+        candidates.push((modified, path));
+    }
+
+    candidates.sort_by(|left, right| right.0.cmp(&left.0));
+    Ok(candidates.into_iter().map(|(_, path)| path).next())
+}
+
+fn review_diagram_file_name(session_id: &str, scope: &str) -> Result<String, String> {
+    let session_id = workspace_state_session_id(session_id)?;
+    let scope = validate_diagram_scope(scope)?;
+    Ok(format!("{session_id}-{scope}.review-diagram.json"))
+}
+
 fn workspace_state_file_name(session_id: &str) -> Result<String, String> {
+    Ok(format!("{}.json", workspace_state_session_id(session_id)?))
+}
+
+fn workspace_state_session_id(session_id: &str) -> Result<String, String> {
     if session_id.is_empty()
         || !session_id.chars().all(|character| {
             character.is_ascii_alphanumeric() || character == '-' || character == '_'
@@ -984,7 +1120,14 @@ fn workspace_state_file_name(session_id: &str) -> Result<String, String> {
         return Err(format!("Invalid workspace state session id: {session_id}"));
     }
 
-    Ok(format!("{session_id}.json"))
+    Ok(session_id.to_string())
+}
+
+fn validate_diagram_scope(scope: &str) -> Result<&str, String> {
+    match scope {
+        "session" | "neighbors" | "deep" => Ok(scope),
+        _ => Err(format!("Invalid review diagram scope: {scope}")),
+    }
 }
 
 fn legacy_active_review_session_path(repo_root: &Path) -> PathBuf {
@@ -2252,9 +2395,11 @@ fn write_json_file<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     static TEMP_REPO_COUNTER: AtomicU64 = AtomicU64::new(0);
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
     #[test]
     fn parses_hunk_header_with_counts() {
@@ -2360,6 +2505,57 @@ mod tests {
             }
             _ => panic!("expected commit range target"),
         }
+    }
+
+    #[test]
+    fn saves_and_loads_review_diagram_from_app_data() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        let repo = temp_repo();
+        let data_dir = temp_repo();
+        fs::create_dir_all(&repo).unwrap();
+        fs::create_dir_all(&data_dir).unwrap();
+        fs::write(repo.join("README.md"), "initial\n").unwrap();
+        run_git(&repo, &["init"]);
+        run_git(&repo, &["config", "user.email", "review-desk@example.test"]);
+        run_git(&repo, &["config", "user.name", "Review Desk Test"]);
+        run_git(&repo, &["add", "README.md"]);
+        run_git(&repo, &["commit", "-m", "initial"]);
+
+        std::env::set_var("REVIEW_DESK_DATA_DIR", &data_dir);
+        let diagram = serde_json::json!({
+            "version": 1,
+            "id": "diagram-test",
+            "sessionId": "agent-session-test",
+            "scope": "session",
+            "kind": "reviewMap",
+            "format": "mermaid",
+            "source": "flowchart LR\n  A-->B\n"
+        });
+
+        save_review_diagram(SaveReviewDiagramRequest {
+            repo_path: repo.display().to_string(),
+            diagram: diagram.clone(),
+        })
+        .unwrap();
+        let loaded = load_review_diagram(LoadReviewDiagramRequest {
+            repo_path: repo.display().to_string(),
+            session_id: "agent-session-test".to_string(),
+            scope: Some("session".to_string()),
+        })
+        .unwrap()
+        .unwrap();
+        let canonical_repo = repo_root(&repo.display().to_string()).unwrap();
+
+        assert_eq!(loaded["id"], "diagram-test");
+        assert!(
+            review_diagram_path(&canonical_repo, "agent-session-test", "session")
+                .unwrap()
+                .exists()
+        );
+
+        std::env::remove_var("REVIEW_DESK_DATA_DIR");
+        fs::remove_dir_all(repo).unwrap();
+        fs::remove_dir_all(data_dir).unwrap();
     }
 
     #[test]

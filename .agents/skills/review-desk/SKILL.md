@@ -18,6 +18,7 @@ Use this skill when the user asks for phrases like:
 - "get/extract Review Desk notes"
 - "add a Review Desk note/comment"
 - "mark files viewed or reviewed"
+- "generate a review map/diagram"
 - "use Review Desk"
 
 ## Core Rule
@@ -32,6 +33,7 @@ review-desk session create --repo . --target branch --base main --head feature/m
 review-desk session create --repo . --target commit --commit 5315b7c --agent codex
 review-desk session create --repo . --target range --from main --to HEAD --agent codex
 review-desk session create --repo . --target pr --pr 123 --agent codex
+review-desk session create --repo . --target pr --pr 123 --agent codex --with-diagram
 ```
 
 The CLI writes active session state to Review Desk app data, not to the reviewed repo.
@@ -54,6 +56,17 @@ Reviewer progress and notes are app-data files too:
 This file owns viewed/reviewed status, private notes, publishable drafts, and
 inline comments. Browser `localStorage` is only a legacy migration source.
 
+Review maps are optional app-data artifacts attached to sessions:
+
+```txt
+~/Library/Application Support/Review Desk/repos/<repo-key>/diagrams/<session-id>-<scope>.review-diagram.json
+```
+
+Do not generate diagrams by default. Use them when the user asks for a map, or
+when the review is complex enough that a visual session map is explicitly useful.
+The default diagram scope is `session`, which uses the active agent-created
+session order/groups/reasons as the source of truth.
+
 Agents should use the CLI for this state:
 
 ```bash
@@ -68,6 +81,11 @@ review-desk notes add --repo . --path src/file.ts --line 42 --body "Check this"
 review-desk notes private --repo . --path src/file.ts --body "Scratch note"
 review-desk notes draft --repo . --path src/file.ts --body "Publishable review text"
 review-desk notes status --repo . --path src/file.ts --status reviewed
+review-desk diagrams create --repo .
+review-desk diagrams create --repo . --scope neighbors
+review-desk diagrams get --repo .
+review-desk diagrams update --repo . --stdin < review-map.mmd
+review-desk diagrams export --repo . --output review-map.mmd
 ```
 
 ## Workflow
@@ -76,7 +94,8 @@ review-desk notes status --repo . --path src/file.ts --status reviewed
 2. Inspect the target diff with Git.
 3. Decide a logical reviewer order.
 4. Create the Review Desk session with the CLI.
-5. Tell the user the session is active and what target it covers.
+5. If requested, create a review map with `review-desk diagrams create --repo .`.
+6. Tell the user the session is active and what target it covers.
 
 Prefer a reviewer workflow order, not alphabetical order:
 
@@ -87,6 +106,10 @@ Prefer a reviewer workflow order, not alphabetical order:
 5. Config/docs/supporting files
 
 Exclude noisy generated files only when they are actually in the diff.
+
+For diagrams, create the review session first. A diagram should visualize the
+curated session, not rediscover the PR from raw Git state. Use `--with-diagram`
+only when the user asks for session creation and a map in one step.
 
 ## Agent-Provided Order
 

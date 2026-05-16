@@ -17,8 +17,10 @@ pub fn run() {
             review::import_global_active_review_session,
             review::import_review_session,
             review::list_review_refs,
+            review::load_review_diagram,
             review::load_review_workspace_state,
             review::open_review_file,
+            review::save_review_diagram,
             review::save_review_workspace_state,
             review::save_text_file
         ])

@@ -55,6 +55,17 @@ export type SaveReviewWorkspaceStateRequest = {
   state: ReviewWorkspaceState;
 };
 
+export type LoadReviewDiagramRequest = {
+  repoPath: string;
+  sessionId: string;
+  scope?: ReviewDiagramScope | null;
+};
+
+export type SaveReviewDiagramRequest = {
+  repoPath: string;
+  diagram: ReviewDiagram;
+};
+
 export type ActiveReviewSession = {
   repoRoot: string;
   manifestPath: string;
@@ -233,6 +244,65 @@ export type PatchArtifact = {
   strategy: string;
   fileCount: number;
   diffTarget: string;
+};
+
+export type ReviewDiagramScope = "session" | "neighbors" | "deep";
+
+export type ReviewDiagram = {
+  version: number;
+  analyzerVersion: number;
+  id: string;
+  sessionId: string;
+  repoRoot: string;
+  kind: "reviewMap";
+  scope: ReviewDiagramScope;
+  format: "mermaid";
+  source: string;
+  targetLabel: string;
+  target: ReviewTargetRequest;
+  snapshotHash: string;
+  nodes: ReviewDiagramNode[];
+  edges: ReviewDiagramEdge[];
+  warnings: ReviewDiagramWarning[];
+  stats: ReviewDiagramStats;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ReviewDiagramNode = {
+  id: string;
+  fileId?: string | null;
+  path?: string | null;
+  label: string;
+  group: string;
+  kind: "file" | "test" | "config" | "doc" | "neighbor" | "collapsed";
+  collapsed: boolean;
+  order: number;
+  reason?: string | null;
+};
+
+export type ReviewDiagramEdge = {
+  id: string;
+  source: string;
+  target: string;
+  sourcePath?: string | null;
+  targetPath?: string | null;
+  kind: "reviewOrder" | "import" | "test";
+  label: string;
+};
+
+export type ReviewDiagramWarning = {
+  code?: string | null;
+  path?: string | null;
+  message: string;
+};
+
+export type ReviewDiagramStats = {
+  files: number;
+  nodes: number;
+  edges: number;
+  collapsedFiles: number;
+  skippedLargeFiles: number;
 };
 
 export type InlineCommentVisibility = "private" | "review";

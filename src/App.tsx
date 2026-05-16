@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { AlertCircle } from "lucide-react";
+import { AlertCircle, FileDiff, Map as MapIcon } from "lucide-react";
 import { CommandBar } from "@/components/review/CommandBar";
 import { DiffCanvas } from "@/components/review/DiffCanvas";
 import { EmptyState } from "@/components/review/EmptyState";
 import { Inspector } from "@/components/review/Inspector";
+import { ReviewMap } from "@/components/review/ReviewMap";
 import { ReviewRail } from "@/components/review/ReviewRail";
+import { Button } from "@/components/ui/button";
 import {
   ResizableHandle,
   ResizablePanel,
@@ -25,6 +27,7 @@ import {
   importGlobalActiveReviewSession,
   importReviewSession,
   listReviewRefs,
+  loadReviewDiagram,
   loadLastRepoPath,
   loadRecentRepos,
   loadReviewHistory,
@@ -34,6 +37,7 @@ import {
   rememberRepo,
   rememberReviewSession,
   reconcileWorkspaceState,
+  saveReviewDiagram,
   saveWorkspaceState,
   toggleReviewedStatus,
   toggleViewedStatus,
@@ -43,6 +47,7 @@ import type {
   PullRequestSummary,
   RecentRepo,
   RepoRefs,
+  ReviewDiagram,
   ReviewHistoryItem,
   ReviewSession,
   ReviewTarget,
@@ -58,6 +63,8 @@ type JumpTarget = {
   expandSection?: "private" | "draft";
   requestedAt: number;
 };
+
+type CenterMode = "diff" | "map";
 
 const EMPTY_FILE_STATE = createDefaultFileState();
 
@@ -81,7 +88,11 @@ function App() {
     loadReviewHistory(),
   );
   const [session, setSession] = useState<ReviewSession | null>(null);
+  const [centerMode, setCenterMode] = useState<CenterMode>("diff");
   const [activeFileId, setActiveFileId] = useState<string | null>(null);
+  const [reviewDiagram, setReviewDiagram] = useState<ReviewDiagram | null>(null);
+  const [isDiagramLoading, setIsDiagramLoading] = useState(false);
+  const [diagramError, setDiagramError] = useState<string | null>(null);
   const [workspaceState, setWorkspaceState] = useState<ReviewWorkspaceState>(
     {},
   );
@@ -93,6 +104,7 @@ function App() {
   const [jumpTarget, setJumpTarget] = useState<JumpTarget | null>(null);
   const refLoadId = useRef(0);
   const sessionLoadId = useRef(0);
+  const diagramLoadId = useRef(0);
   const workspaceLoadId = useRef(0);
   const lastSeenActiveManifest = useRef<string | null>(null);
   const activeSessionPollRef = useRef(false);
@@ -199,6 +211,62 @@ function App() {
     });
   }, []);
 
+  const loadDiagramForSession = useCallback(async (nextSession: ReviewSession) => {
+    const requestId = diagramLoadId.current + 1;
+    diagramLoadId.current = requestId;
+    setIsDiagramLoading(true);
+    setDiagramError(null);
+
+    try {
+      const diagram = await loadReviewDiagram({
+        repoPath: nextSession.repo.root,
+        sessionId: nextSession.id,
+      });
+      if (
+        diagramLoadId.current !== requestId ||
+        sessionRef.current?.id !== nextSession.id
+      ) {
+        return;
+      }
+      setReviewDiagram(diagram);
+    } catch (caught) {
+      if (diagramLoadId.current === requestId) {
+        setReviewDiagram(null);
+        setDiagramError(caught instanceof Error ? caught.message : String(caught));
+      }
+    } finally {
+      if (diagramLoadId.current === requestId) {
+        setIsDiagramLoading(false);
+      }
+    }
+  }, []);
+
+  const reloadDiagram = useCallback(() => {
+    const currentSession = sessionRef.current;
+    if (!currentSession || isDiagramLoading) {
+      return;
+    }
+    void loadDiagramForSession(currentSession);
+  }, [isDiagramLoading, loadDiagramForSession]);
+
+  const saveDiagram = useCallback((diagram: ReviewDiagram) => {
+    const currentSession = sessionRef.current;
+    if (!currentSession) {
+      return;
+    }
+
+    setReviewDiagram(diagram);
+    setDiagramError(null);
+    void saveReviewDiagram({
+      repoPath: currentSession.repo.root,
+      diagram,
+    })
+      .then((saved) => setReviewDiagram(saved))
+      .catch((caught) => {
+        setDiagramError(caught instanceof Error ? caught.message : String(caught));
+      });
+  }, []);
+
   const applySession = useCallback((nextSession: ReviewSession) => {
     const previousSession = sessionRef.current;
     const previousActiveFileId = activeFileIdRef.current;
@@ -221,6 +289,8 @@ function App() {
     setWorkspaceStateReadySessionId(null);
     setSession(nextSession);
     sessionRef.current = nextSession;
+    setReviewDiagram(null);
+    setDiagramError(null);
     setWorkspaceState((current) => {
       if (sameSession) {
         return reconcileWorkspaceState(nextSession, current);
@@ -235,6 +305,8 @@ function App() {
     if (nextSession.order.manifestPath) {
       lastSeenActiveManifest.current = nextSession.order.manifestPath;
     }
+
+    void loadDiagramForSession(nextSession);
 
     void loadWorkspaceState(nextSession)
       .then((saved) => {
@@ -259,7 +331,7 @@ function App() {
           setError(caught instanceof Error ? caught.message : String(caught));
         }
       });
-  }, []);
+  }, [loadDiagramForSession]);
 
   const tryLoadActiveSession = useCallback(
     async (path: string) => {
@@ -1019,6 +1091,25 @@ function App() {
         ) : null}
 
         {session ? (
+          centerMode === "map" ? (
+            <section className="flex min-h-0 flex-1 flex-col bg-[var(--rd-ink)]">
+              <CenterModeToggle mode={centerMode} onChange={setCenterMode} />
+              <div className="min-h-0 flex-1">
+                <ReviewMap
+                  session={session}
+                  diagram={reviewDiagram}
+                  isLoading={isDiagramLoading}
+                  error={diagramError}
+                  onReload={reloadDiagram}
+                  onSave={saveDiagram}
+                  onSelectFile={(fileId) => {
+                    selectFile(fileId);
+                    setCenterMode("diff");
+                  }}
+                />
+              </div>
+            </section>
+          ) : (
           <ResizablePanelGroup orientation="horizontal" className="min-h-0 flex-1">
             <ResizablePanel defaultSize="24%" minSize="18%" maxSize="34%">
               <ReviewRail
@@ -1030,18 +1121,23 @@ function App() {
             </ResizablePanel>
             <ResizableHandle />
             <ResizablePanel defaultSize="52%" minSize="36%">
-              <DiffCanvas
-                file={activeFile}
-                fileState={activeFileState}
-                jumpTarget={jumpTarget}
-                supportsReviewComments={supportsReviewComments}
-                onScrollHandled={handleScrollHandled}
-                onMarkViewed={markActiveViewed}
-                onMarkReviewed={markActiveReviewed}
-                onOpenFile={openActiveFile}
-                onSaveInlineComment={saveInlineComment}
-                onDeleteInlineComment={deleteInlineComment}
-              />
+              <section className="flex h-full min-h-0 flex-col bg-[var(--rd-ink)]">
+                <CenterModeToggle mode={centerMode} onChange={setCenterMode} />
+                <div className="min-h-0 flex-1">
+                  <DiffCanvas
+                    file={activeFile}
+                    fileState={activeFileState}
+                    jumpTarget={jumpTarget}
+                    supportsReviewComments={supportsReviewComments}
+                    onScrollHandled={handleScrollHandled}
+                    onMarkViewed={markActiveViewed}
+                    onMarkReviewed={markActiveReviewed}
+                    onOpenFile={openActiveFile}
+                    onSaveInlineComment={saveInlineComment}
+                    onDeleteInlineComment={deleteInlineComment}
+                  />
+                </div>
+              </section>
             </ResizablePanel>
             <ResizableHandle />
             <ResizablePanel defaultSize="24%" minSize="20%" maxSize="36%">
@@ -1059,11 +1155,55 @@ function App() {
               />
             </ResizablePanel>
           </ResizablePanelGroup>
+          )
         ) : (
           <EmptyState onPickRepo={pickRepo} />
         )}
       </main>
     </TooltipProvider>
+  );
+}
+
+function CenterModeToggle({
+  mode,
+  onChange,
+}: {
+  mode: CenterMode;
+  onChange: (mode: CenterMode) => void;
+}) {
+  return (
+    <div className="flex h-9 shrink-0 items-center justify-center border-b border-[var(--rd-hair)] bg-[var(--rd-ink)]">
+      <div className="flex items-center gap-1 rounded-md bg-[var(--rd-ink-2)] p-0.5">
+        <Button
+          type="button"
+          variant="ghost"
+          size="xs"
+          onClick={() => onChange("diff")}
+          className={
+            mode === "diff"
+              ? "h-6 rounded bg-[var(--rd-ink-4)] px-2 text-[11px] text-[var(--rd-cream)]"
+              : "h-6 rounded px-2 text-[11px] text-[var(--rd-graphite)] hover:text-[var(--rd-cream)]"
+          }
+        >
+          <FileDiff className="size-3" />
+          Diff
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="xs"
+          onClick={() => onChange("map")}
+          className={
+            mode === "map"
+              ? "h-6 rounded bg-[var(--rd-ink-4)] px-2 text-[11px] text-[var(--rd-cream)]"
+              : "h-6 rounded px-2 text-[11px] text-[var(--rd-graphite)] hover:text-[var(--rd-cream)]"
+          }
+        >
+          <MapIcon className="size-3" />
+          Map
+        </Button>
+      </div>
+    </div>
   );
 }
 

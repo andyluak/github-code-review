@@ -40,6 +40,16 @@ That workspace-state file owns viewed/reviewed status, private notes, PR-only
 publishable drafts, and inline comments. Browser `localStorage` is only used as a
 migration source for older app builds.
 
+Review maps are optional session artifacts stored beside session data:
+
+```txt
+repos/<repo-name>-<stable-hash>/diagrams/<session-id>-<scope>.review-diagram.json
+```
+
+Diagram source is editable Mermaid. Diagram generation is explicit: normal
+session creation stays fast unless `--with-diagram` or `review-desk diagrams
+create` is requested.
+
 `.review-desk/` inside a repo is legacy/export-only state. Use `--output` only
 when you explicitly want a portable manifest outside the default app storage.
 
@@ -73,6 +83,12 @@ Pull-request session:
 
 ```bash
 review-desk session create --repo . --target pr --pr 123 --agent claude
+```
+
+Pull-request session with a review map:
+
+```bash
+review-desk session create --repo . --target pr --pr 123 --agent claude --with-diagram
 ```
 
 Agent-provided order through stdin:
@@ -130,6 +146,24 @@ review-desk notes status --repo . --path src/file.ts --status reviewed
 side of the diff. In pull request sessions, use `--visibility review` for
 publishable inline comments. Use `--side old` for removed lines and `--stdin`
 for multi-line text.
+
+Create, read, edit, and export review maps:
+
+```bash
+review-desk diagrams create --repo .
+review-desk diagrams create --repo . --scope neighbors
+review-desk diagrams create --repo . --target commit --commit 5315b7c
+review-desk diagrams list --repo . --json
+review-desk diagrams get --repo .
+review-desk diagrams update --repo . --stdin < review-map.mmd
+review-desk diagrams export --repo . --output review-map.mmd
+```
+
+`diagrams create` uses the active review session by default. The default scope
+is `session`, which maps only included review-session files and preserves agent
+order/groups/reasons. `neighbors` adds capped direct import neighbors. `deep`
+currently uses the same capped expansion and leaves room for agent-authored
+Mermaid refinements.
 
 Backwards-compatible aliases still work:
 
@@ -201,6 +235,7 @@ Supported targets:
 - Use Git refs that exist locally. PR targets may use `gh` and `git fetch` to resolve the head ref.
 - Use `review-desk session files ...` to add, remove, reorder, or regroup files in an active session.
 - Use `review-desk notes ...` to read/write viewed status, private notes, and inline comments; publishable drafts and review-visible comments are PR-only.
+- Use `review-desk diagrams create --repo .` only when the user or task asks for a map; diagrams are optional and attached to the active session.
 - Put every intentionally ordered file in `fileOrder`.
 - Preserve review workflow order, not alphabetical order.
 - Use short, concrete `reason` text. One sentence is enough.

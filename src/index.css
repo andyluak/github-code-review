@@ -258,6 +258,95 @@ textarea,
   background: var(--rd-ink-2);
 }
 
+.rd-mermaid-map svg {
+  overflow: visible;
+  background: transparent !important;
+  font-family: var(--font-mono) !important;
+}
+
+.rd-mermaid-map text,
+.rd-mermaid-map .label text,
+.rd-mermaid-map .nodeLabel,
+.rd-mermaid-map .edgeLabel,
+.rd-mermaid-map .cluster-label text {
+  fill: var(--rd-cream) !important;
+  color: var(--rd-cream) !important;
+  font-family: var(--font-mono) !important;
+  font-size: 13px !important;
+  line-height: 1.35 !important;
+}
+
+.rd-mermaid-map .cluster rect {
+  fill: rgba(236, 230, 216, 0.045) !important;
+  stroke: rgba(236, 230, 216, 0.22) !important;
+  stroke-width: 1.2px !important;
+  rx: 6px !important;
+}
+
+.rd-mermaid-map .cluster-label text {
+  fill: #f1d28f !important;
+  font-size: 14px !important;
+  font-weight: 650 !important;
+}
+
+.rd-mermaid-map .node rect,
+.rd-mermaid-map .node polygon,
+.rd-mermaid-map .node circle,
+.rd-mermaid-map .node ellipse,
+.rd-mermaid-map .node path {
+  fill: #1f2633 !important;
+  stroke: rgba(143, 179, 255, 0.88) !important;
+  stroke-width: 1.4px !important;
+  filter: drop-shadow(0 10px 22px rgba(0, 0, 0, 0.26));
+}
+
+.rd-mermaid-map .node.frontend rect,
+.rd-mermaid-map .node.frontend polygon,
+.rd-mermaid-map .node.frontend path {
+  fill: #13271f !important;
+  stroke: rgba(110, 231, 183, 0.86) !important;
+}
+
+.rd-mermaid-map .node.backend rect,
+.rd-mermaid-map .node.backend polygon,
+.rd-mermaid-map .node.backend path {
+  fill: #1d2738 !important;
+  stroke: rgba(143, 179, 255, 0.9) !important;
+}
+
+.rd-mermaid-map .node.remote rect,
+.rd-mermaid-map .node.remote polygon,
+.rd-mermaid-map .node.remote path {
+  fill: #332414 !important;
+  stroke: rgba(245, 158, 11, 0.9) !important;
+}
+
+.rd-mermaid-map .node.risk rect,
+.rd-mermaid-map .node.risk polygon,
+.rd-mermaid-map .node.risk path {
+  fill: #351d2d !important;
+  stroke: rgba(244, 114, 182, 0.92) !important;
+}
+
+.rd-mermaid-map .edgePaths path,
+.rd-mermaid-map .flowchart-link {
+  stroke: rgba(236, 230, 216, 0.82) !important;
+  stroke-width: 1.35px !important;
+}
+
+.rd-mermaid-map marker path {
+  fill: rgba(236, 230, 216, 0.82) !important;
+  stroke: rgba(236, 230, 216, 0.82) !important;
+}
+
+.rd-mermaid-map .edgeLabel,
+.rd-mermaid-map .edgeLabel rect,
+.rd-mermaid-map .edgeLabel background {
+  background: rgba(17, 16, 23, 0.86) !important;
+  fill: rgba(17, 16, 23, 0.86) !important;
+  color: var(--rd-cream) !important;
+}
+
 .rd-surface-raised {
   background: var(--rd-ink-3);
 }

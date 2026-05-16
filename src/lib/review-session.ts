@@ -4,14 +4,17 @@ import type {
   ActiveReviewSessionRequest,
   CreateReviewSessionRequest,
   ImportReviewSessionRequest,
+  LoadReviewDiagramRequest,
   LoadReviewWorkspaceStateRequest,
   ListReviewRefsRequest,
   OpenReviewFileRequest,
   RecentRepo,
   RepoRefs,
+  ReviewDiagram,
   ReviewHistoryItem,
   ReviewSession,
   ReviewWorkspaceState,
+  SaveReviewDiagramRequest,
   SaveReviewWorkspaceStateRequest,
   SaveTextFileRequest,
   SessionFileState,
@@ -64,6 +67,18 @@ export async function saveTextFile(
   request: SaveTextFileRequest,
 ): Promise<void> {
   return invoke<void>("save_text_file", { request });
+}
+
+export async function loadReviewDiagram(
+  request: LoadReviewDiagramRequest,
+): Promise<ReviewDiagram | null> {
+  return invoke<ReviewDiagram | null>("load_review_diagram", { request });
+}
+
+export async function saveReviewDiagram(
+  request: SaveReviewDiagramRequest,
+): Promise<ReviewDiagram> {
+  return invoke<ReviewDiagram>("save_review_diagram", { request });
 }
 
 export async function openReviewFile(

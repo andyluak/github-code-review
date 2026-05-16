@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { createRequire } from "node:module";
 import {
   copyFileSync,
   existsSync,
@@ -19,6 +20,14 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 const LEGACY_SESSION_DIR = ".review-desk/sessions";
 const LEGACY_ACTIVE_SESSION_PATH = ".review-desk/active-session.json";
 const SESSION_FILE_SUFFIX = ".review-session.json";
+const DIAGRAM_FILE_SUFFIX = ".review-diagram.json";
+const DIAGRAM_ANALYZER_VERSION = 1;
+const MAX_DIAGRAM_NODES = 80;
+const MAX_DIAGRAM_EDGES = 200;
+const MAX_AST_FILE_BYTES = 256 * 1024;
+const MAX_NEIGHBOR_NODES = 30;
+const require = createRequire(import.meta.url);
+let TsMorphProject = null;
 
 main();
 
@@ -33,6 +42,10 @@ function main() {
       case "notes":
       case "note":
         handleNotesCommand(rest);
+        break;
+      case "diagrams":
+      case "diagram":
+        handleDiagramsCommand(rest);
         break;
       case "create-session":
       case "create":
@@ -96,6 +109,39 @@ function handleNotesCommand(rawArgs) {
       break;
     default:
       fail(`Unknown notes command: ${subcommand}`);
+  }
+}
+
+function handleDiagramsCommand(rawArgs) {
+  const [subcommand, ...rest] = rawArgs;
+
+  switch (subcommand) {
+    case "create":
+    case "new":
+      createDiagram(parseArgs(rest));
+      break;
+    case "list":
+      listDiagrams(parseArgs(rest));
+      break;
+    case "get":
+    case "show":
+      getDiagram(parseArgs(rest));
+      break;
+    case "export":
+      exportDiagram(parseArgs(rest));
+      break;
+    case "update":
+    case "set":
+      updateDiagram(parseArgs(rest));
+      break;
+    case "help":
+    case "--help":
+    case "-h":
+    case undefined:
+      printHelp();
+      break;
+    default:
+      fail(`Unknown diagrams command: ${subcommand}`);
   }
 }
 
@@ -164,6 +210,56 @@ function handleSessionFilesCommand(rawArgs) {
 }
 
 function createSession(args) {
+  const result = createSessionManifest(args);
+  let diagramResult = null;
+
+  if (args["with-diagram"]) {
+    diagramResult = createDiagramFromArgs(
+      {
+        ...args,
+        repo: result.repoRoot,
+        manifest: result.manifestPath,
+        scope: args.scope ?? "session",
+      },
+      { emit: false },
+    );
+  }
+
+  if (args.json) {
+    writeStdout({
+      manifestPath: result.manifestPath,
+      activeSessionPath: result.activeSessionPath,
+      active: result.active,
+      target: result.target.request,
+      fileOrder: result.manifest.fileOrder.length,
+      excludedPaths: result.manifest.excludedPaths.length,
+      ...(diagramResult
+        ? {
+            diagram: {
+              id: diagramResult.diagram.id,
+              path: diagramResult.path,
+              cached: diagramResult.cached,
+              scope: diagramResult.diagram.scope,
+              nodes: diagramResult.diagram.stats.nodes,
+              edges: diagramResult.diagram.stats.edges,
+            },
+          }
+        : {}),
+    });
+  } else {
+    console.log(`review-desk session: ${result.manifestPath}`);
+    if (result.active) {
+      console.log(`active session: ${result.activeSessionPath}`);
+    }
+    if (diagramResult) {
+      console.log(
+        `${diagramResult.cached ? "diagram cached" : "diagram created"}: ${diagramResult.path}`,
+      );
+    }
+  }
+}
+
+function createSessionManifest(args) {
   const repoRoot = gitRoot(args.repo ?? ".");
   const sourceManifest = readSourceManifest(args);
   const target = resolveReviewTarget(repoRoot, args, sourceManifest);
@@ -200,21 +296,14 @@ function createSession(args) {
     activePath = writeActivePointer(repoRoot, outputPath);
   }
 
-  if (args.json) {
-    writeStdout({
-      manifestPath: resolve(outputPath),
-      activeSessionPath: activePath,
-      active: args.activate !== false,
-      target: target.request,
-      fileOrder: manifest.fileOrder.length,
-      excludedPaths: manifest.excludedPaths.length,
-    });
-  } else {
-    console.log(`review-desk session: ${resolve(outputPath)}`);
-    if (args.activate !== false) {
-      console.log(`active session: ${activePath}`);
-    }
-  }
+  return {
+    repoRoot,
+    manifest,
+    manifestPath: resolve(outputPath),
+    activeSessionPath: activePath,
+    active: args.activate !== false,
+    target,
+  };
 }
 
 function activateSession(args) {
@@ -631,6 +720,777 @@ function setFileStatus(args) {
   }
 
   console.log(`marked ${file.path} ${status}`);
+}
+
+function createDiagram(args) {
+  const result = createDiagramFromArgs(args, { emit: true });
+  return result;
+}
+
+function createDiagramFromArgs(args, options = {}) {
+  const context = loadDiagramContext(args);
+  const scope = normalizeDiagramScope(args.scope ?? "session");
+  const diagramPath = diagramPathForSession(context.repoRoot, context.sessionId, scope);
+  const existing = existsSync(diagramPath) ? readJson(diagramPath) : null;
+  const snapshotHash = diagramSnapshotHash(context, scope);
+
+  if (
+    existing &&
+    !args.force &&
+    existing.snapshotHash === snapshotHash &&
+    existing.analyzerVersion === DIAGRAM_ANALYZER_VERSION
+  ) {
+    if (options.emit !== false) {
+      emitDiagramResult(existing, diagramPath, true, args);
+    }
+    return { diagram: existing, path: diagramPath, cached: true };
+  }
+
+  const diagram = buildReviewDiagram(context, scope, snapshotHash, existing);
+  writeJson(diagramPath, diagram);
+
+  if (options.emit !== false) {
+    emitDiagramResult(diagram, diagramPath, false, args);
+  }
+
+  return { diagram, path: diagramPath, cached: false };
+}
+
+function listDiagrams(args) {
+  const repoRoot = gitRoot(args.repo ?? ".");
+  const diagrams = listDiagramRecords(repoRoot).map((record) => ({
+    id: record.diagram.id,
+    sessionId: record.diagram.sessionId,
+    kind: record.diagram.kind,
+    scope: record.diagram.scope,
+    targetLabel: record.diagram.targetLabel,
+    updatedAt: record.diagram.updatedAt,
+    path: record.path,
+    nodes: record.diagram.stats?.nodes ?? record.diagram.nodes?.length ?? 0,
+    edges: record.diagram.stats?.edges ?? record.diagram.edges?.length ?? 0,
+  }));
+
+  if (args.json) {
+    writeStdout({ repoRoot, diagrams });
+    return;
+  }
+
+  if (diagrams.length === 0) {
+    console.log("No review diagrams.");
+    return;
+  }
+
+  for (const diagram of diagrams) {
+    console.log(
+      `${diagram.updatedAt}  ${diagram.scope}  ${diagram.nodes} nodes  ${diagram.path}`,
+    );
+  }
+}
+
+function getDiagram(args) {
+  const { diagram, path } = loadDiagramByArgs(args);
+
+  if (args.json) {
+    writeStdout({ path, diagram });
+    return;
+  }
+
+  console.log(diagram.source);
+}
+
+function exportDiagram(args) {
+  const { diagram, path } = loadDiagramByArgs(args);
+  const output = clean(args.output ?? args.out);
+
+  if (args.json && !output) {
+    writeStdout({ path, diagram });
+    return;
+  }
+
+  const contents = args.format === "json"
+    ? `${JSON.stringify(diagram, null, 2)}\n`
+    : `${diagram.source.trimEnd()}\n`;
+
+  if (output) {
+    writeFileTextAtomic(output, contents);
+    if (args.json) {
+      writeStdout({ sourcePath: path, outputPath: resolve(output) });
+    } else {
+      console.log(`exported diagram: ${resolve(output)}`);
+    }
+    return;
+  }
+
+  process.stdout.write(contents);
+}
+
+function updateDiagram(args) {
+  const { diagram, path } = loadDiagramByArgs(args);
+  const source = readDiagramSourceArg(args);
+  const now = new Date().toISOString();
+  const warnings = [
+    ...(diagram.warnings ?? []).filter(
+      (warning) => warning.code !== "manual-source-edit",
+    ),
+    {
+      code: "manual-source-edit",
+      message: "Mermaid source was manually edited; node and edge metadata may be stale.",
+    },
+  ];
+  const next = {
+    ...diagram,
+    source,
+    warnings,
+    updatedAt: now,
+  };
+
+  writeJson(path, next);
+
+  if (args.json) {
+    writeStdout({ path, diagram: next });
+    return;
+  }
+
+  console.log(`updated diagram: ${path}`);
+}
+
+function loadDiagramContext(args) {
+  if (hasExplicitTargetArgs(args) && !clean(args.manifest)) {
+    const created = createSessionManifest({
+      ...args,
+      json: false,
+      activate: args.activate !== false,
+    });
+    return loadNotesContext({
+      ...args,
+      repo: created.repoRoot,
+      manifest: created.manifestPath,
+    });
+  }
+
+  return loadNotesContext(args);
+}
+
+function hasExplicitTargetArgs(args) {
+  return Boolean(
+    clean(args.target ?? args.t) ||
+      clean(args.base) ||
+      clean(args.head) ||
+      clean(args.commit ?? args.sha) ||
+      clean(args.from ?? args["from-ref"]) ||
+      clean(args.to ?? args["to-ref"]) ||
+      clean(args.pr ?? args.number ?? args.url),
+  );
+}
+
+function normalizeDiagramScope(value) {
+  const scope = String(value).trim();
+  if (scope === "session" || scope === "neighbors" || scope === "deep") {
+    return scope;
+  }
+  fail("Diagram scope must be session, neighbors, or deep");
+}
+
+function buildReviewDiagram(context, scope, snapshotHash, previous) {
+  const now = new Date().toISOString();
+  const warnings = [];
+  const sessionEntries = sessionFileEntries(context)
+    .filter((entry) => !entry.excluded && !entry.missing)
+    .map((entry, index) => ({
+      ...entry,
+      order: index + 1,
+      source: "session",
+    }));
+  const initialPaths = sessionEntries.map((entry) => entry.path);
+  const relations = collectImportRelations(context.repoRoot, initialPaths, scope, warnings);
+  const entries = [...sessionEntries];
+  const seenPaths = new Set(entries.map((entry) => entry.path));
+
+  if (scope !== "session") {
+    for (const path of relations.neighborPaths.slice(0, MAX_NEIGHBOR_NODES)) {
+      if (seenPaths.has(path) || isGeneratedPath(path)) {
+        continue;
+      }
+      entries.push({
+        path,
+        ordered: false,
+        excluded: false,
+        missing: false,
+        group: "External context",
+        reason: "Directly imported by a session file.",
+        order: entries.length + 1,
+        source: "neighbor",
+      });
+      seenPaths.add(path);
+    }
+    if (relations.neighborPaths.length > MAX_NEIGHBOR_NODES) {
+      warnings.push({
+        code: "neighbor-cap",
+        message: `Collapsed ${relations.neighborPaths.length - MAX_NEIGHBOR_NODES} neighbor files beyond the diagram cap.`,
+      });
+    }
+  }
+
+  if (scope === "deep") {
+    warnings.push({
+      code: "deep-v1",
+      message: "Deep scope currently uses capped neighbor expansion; broader agent-authored context can be layered into the Mermaid source.",
+    });
+  }
+
+  const visibleEntries = entries.slice(0, MAX_DIAGRAM_NODES - 1);
+  const overflowEntries = entries.slice(MAX_DIAGRAM_NODES - 1);
+  if (overflowEntries.length > 0) {
+    warnings.push({
+      code: "node-cap",
+      message: `Collapsed ${overflowEntries.length} files beyond the ${MAX_DIAGRAM_NODES} node cap.`,
+    });
+  }
+
+  const nodes = visibleEntries.map((entry, index) => diagramNodeForEntry(entry, index));
+  if (overflowEntries.length > 0) {
+    nodes.push({
+      id: `n${nodes.length}`,
+      label: `${overflowEntries.length} more files`,
+      group: "Collapsed",
+      kind: "collapsed",
+      collapsed: true,
+      order: nodes.length + 1,
+      fileId: null,
+      path: null,
+      reason: "Large session collapsed for readability.",
+    });
+  }
+
+  const pathToNode = new Map(
+    nodes.filter((node) => node.path).map((node) => [node.path, node]),
+  );
+  const edges = buildDiagramEdges(nodes, pathToNode, relations.edges, warnings);
+  const source = renderMermaidReviewMap(context, nodes, edges, warnings);
+
+  return {
+    version: 1,
+    analyzerVersion: DIAGRAM_ANALYZER_VERSION,
+    id: `diagram-${rustHashStrings([context.sessionId, scope])}`,
+    sessionId: context.sessionId,
+    repoRoot: context.repoRoot,
+    kind: "reviewMap",
+    scope,
+    format: "mermaid",
+    source,
+    targetLabel: context.target.label,
+    target: context.target.request,
+    snapshotHash,
+    nodes,
+    edges,
+    warnings,
+    stats: {
+      files: sessionEntries.length,
+      nodes: nodes.length,
+      edges: edges.length,
+      collapsedFiles: overflowEntries.length,
+      skippedLargeFiles: warnings.filter((warning) => warning.code === "large-file").length,
+    },
+    createdAt: previous?.createdAt ?? now,
+    updatedAt: now,
+  };
+}
+
+function diagramNodeForEntry(entry, index) {
+  return {
+    id: `n${index}`,
+    fileId: fileId(entry.path),
+    path: entry.path,
+    label: `${entry.order}. ${compactDiagramPath(entry.path)}`,
+    group: clean(entry.group) ?? (entry.ordered ? "Ordered by agent" : "Not ordered by agent"),
+    kind: diagramNodeKind(entry.path, entry.source),
+    collapsed: false,
+    order: entry.order,
+    reason: clean(entry.reason) ?? null,
+  };
+}
+
+function diagramNodeKind(path, source) {
+  if (source === "neighbor") {
+    return "neighbor";
+  }
+  const lower = path.toLowerCase();
+  if (/\.(test|spec)\.[tj]sx?$/.test(lower) || lower.includes("__tests__/")) {
+    return "test";
+  }
+  if (lower.endsWith(".md") || lower.startsWith("docs/")) {
+    return "doc";
+  }
+  if (
+    lower.endsWith(".json") ||
+    lower.endsWith(".toml") ||
+    lower.endsWith(".yml") ||
+    lower.endsWith(".yaml") ||
+    lower.includes("config")
+  ) {
+    return "config";
+  }
+  return "file";
+}
+
+function collectImportRelations(repoRoot, paths, scope, warnings) {
+  const edges = [];
+  const neighborPaths = [];
+  const sessionPathSet = new Set(paths);
+  const tsPaths = paths.filter(isTsLikePath);
+
+  if (tsPaths.length === 0) {
+    return { edges, neighborPaths };
+  }
+
+  let project = null;
+  try {
+    const Project = getTsMorphProject();
+    const tsconfig = findTsConfig(repoRoot);
+    project = tsconfig
+      ? new Project({ tsConfigFilePath: tsconfig, skipAddingFilesFromTsConfig: true })
+      : new Project({ skipAddingFilesFromTsConfig: true });
+  } catch (error) {
+    warnings.push({
+      code: "ts-project",
+      message: `TypeScript project setup failed: ${error instanceof Error ? error.message : String(error)}`,
+    });
+    return collectRegexImportRelations(repoRoot, paths, scope, warnings);
+  }
+
+  for (const path of tsPaths) {
+    const fullPath = join(repoRoot, path);
+    if (!existsSync(fullPath)) {
+      continue;
+    }
+    if (statSync(fullPath).size > MAX_AST_FILE_BYTES) {
+      warnings.push({
+        code: "large-file",
+        path,
+        message: "Skipped AST import analysis for a large file.",
+      });
+      continue;
+    }
+
+    try {
+      const sourceFile =
+        project.getSourceFile(fullPath) ?? project.addSourceFileAtPath(fullPath);
+      for (const declaration of sourceFile.getImportDeclarations()) {
+        const specifier = declaration.getModuleSpecifierValue();
+        const resolvedPath =
+          declaration.getModuleSpecifierSourceFile()?.getFilePath() ??
+          resolveImportCandidate(repoRoot, path, specifier);
+        if (resolvedPath && !isPathInside(repoRoot, resolvedPath)) {
+          continue;
+        }
+        const repoPath = resolvedPath ? normalizeRepoRelativePath(repoRoot, resolvedPath) : null;
+        if (!repoPath || isGeneratedPath(repoPath)) {
+          continue;
+        }
+        if (sessionPathSet.has(repoPath)) {
+          edges.push({
+            sourcePath: path,
+            targetPath: repoPath,
+            kind: "import",
+            label: "imports",
+          });
+        } else if (scope !== "session") {
+          neighborPaths.push(repoPath);
+          edges.push({
+            sourcePath: path,
+            targetPath: repoPath,
+            kind: "import",
+            label: "imports",
+          });
+        }
+      }
+    } catch (error) {
+      warnings.push({
+        code: "ts-file",
+        path,
+        message: `TypeScript import analysis failed for ${path}: ${error instanceof Error ? error.message : String(error)}`,
+      });
+    }
+  }
+
+  return {
+    edges: dedupeRelationEdges(edges),
+    neighborPaths: unique(neighborPaths),
+  };
+}
+
+function collectRegexImportRelations(repoRoot, paths, scope, warnings) {
+  const edges = [];
+  const neighborPaths = [];
+  const sessionPathSet = new Set(paths);
+
+  for (const path of paths.filter(isTsLikePath)) {
+    const fullPath = join(repoRoot, path);
+    if (!existsSync(fullPath) || statSync(fullPath).size > MAX_AST_FILE_BYTES) {
+      continue;
+    }
+    const source = readFileSync(fullPath, "utf8");
+    const imports = source.matchAll(/\bimport\s+(?:[^'"]+\s+from\s+)?["']([^"']+)["']/g);
+    for (const match of imports) {
+      const resolved = resolveImportCandidate(repoRoot, path, match[1]);
+      if (!resolved) {
+        continue;
+      }
+      const repoPath = normalizeRepoRelativePath(repoRoot, resolved);
+      if (sessionPathSet.has(repoPath)) {
+        edges.push({ sourcePath: path, targetPath: repoPath, kind: "import", label: "imports" });
+      } else if (scope !== "session") {
+        neighborPaths.push(repoPath);
+      }
+    }
+  }
+
+  warnings.push({
+    code: "regex-imports",
+    message: "Fell back to regex import analysis because TypeScript project setup failed.",
+  });
+  return { edges: dedupeRelationEdges(edges), neighborPaths: unique(neighborPaths) };
+}
+
+function buildDiagramEdges(nodes, pathToNode, importRelations, warnings) {
+  const edges = [];
+  const sessionNodes = nodes.filter((node) => node.path && node.kind !== "neighbor");
+
+  for (let index = 1; index < sessionNodes.length; index += 1) {
+    edges.push({
+      id: `e${edges.length}`,
+      source: sessionNodes[index - 1].id,
+      target: sessionNodes[index].id,
+      sourcePath: sessionNodes[index - 1].path,
+      targetPath: sessionNodes[index].path,
+      kind: "reviewOrder",
+      label: "next",
+    });
+  }
+
+  for (const relation of importRelations) {
+    const source = pathToNode.get(relation.sourcePath);
+    const target = pathToNode.get(relation.targetPath);
+    if (!source || !target || source.id === target.id) {
+      continue;
+    }
+    edges.push({
+      id: `e${edges.length}`,
+      source: source.id,
+      target: target.id,
+      sourcePath: source.path,
+      targetPath: target.path,
+      kind: relation.kind,
+      label: relation.label,
+    });
+  }
+
+  for (const edge of testToSourceEdges(nodes, pathToNode)) {
+    edges.push({
+      id: `e${edges.length}`,
+      ...edge,
+    });
+  }
+
+  const deduped = [];
+  const seen = new Set();
+  for (const edge of edges) {
+    const key = `${edge.source}:${edge.target}:${edge.kind}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    deduped.push({ ...edge, id: `e${deduped.length}` });
+  }
+
+  if (deduped.length > MAX_DIAGRAM_EDGES) {
+    warnings.push({
+      code: "edge-cap",
+      message: `Collapsed ${deduped.length - MAX_DIAGRAM_EDGES} edges beyond the ${MAX_DIAGRAM_EDGES} edge cap.`,
+    });
+  }
+
+  return deduped.slice(0, MAX_DIAGRAM_EDGES);
+}
+
+function testToSourceEdges(nodes, pathToNode) {
+  const edges = [];
+  const sourceNodes = nodes.filter((node) => node.path && node.kind !== "test");
+
+  for (const testNode of nodes.filter((node) => node.kind === "test" && node.path)) {
+    const baseName = basename(testNode.path)
+      .replace(/\.(test|spec)\.[tj]sx?$/i, "")
+      .replace(/\.[tj]sx?$/i, "");
+    const match = sourceNodes.find((node) => {
+      const candidate = basename(node.path)
+        .replace(/\.[tj]sx?$/i, "");
+      return candidate === baseName;
+    });
+    if (match && pathToNode.has(match.path)) {
+      edges.push({
+        source: testNode.id,
+        target: match.id,
+        sourcePath: testNode.path,
+        targetPath: match.path,
+        kind: "test",
+        label: "tests",
+      });
+    }
+  }
+
+  return edges;
+}
+
+function renderMermaidReviewMap(context, nodes, edges, warnings) {
+  const lines = [
+    "flowchart LR",
+    `  %% Review Desk diagram for ${context.target.label}`,
+  ];
+  const groups = groupDiagramNodes(nodes);
+
+  for (const group of groups) {
+    lines.push(`  subgraph ${group.id}["${mermaidText(group.title)}"]`);
+    for (const node of group.nodes) {
+      lines.push(`    ${node.id}["${mermaidText(node.label)}"]`);
+    }
+    lines.push("  end");
+  }
+
+  for (const edge of edges) {
+    const arrow = edge.kind === "reviewOrder" ? "-.->" : "-->";
+    lines.push(`  ${edge.source} ${arrow}|${mermaidText(edge.label)}| ${edge.target}`);
+  }
+
+  if (warnings.length > 0) {
+    lines.push(`  warn["${mermaidText(`${warnings.length} generation warnings`)}"]`);
+  }
+
+  lines.push(
+    "  classDef file fill:#1f1d1a,stroke:#a39e92,color:#f4efe2;",
+    "  classDef test fill:#18251f,stroke:#6fa27e,color:#f4efe2;",
+    "  classDef config fill:#202336,stroke:#8794cc,color:#f4efe2;",
+    "  classDef doc fill:#27231d,stroke:#c6a15b,color:#f4efe2;",
+    "  classDef neighbor fill:#231f28,stroke:#b894d8,color:#f4efe2;",
+    "  classDef collapsed fill:#321f1a,stroke:#d65a31,color:#f4efe2;",
+  );
+
+  for (const node of nodes) {
+    lines.push(`  class ${node.id} ${node.kind};`);
+  }
+
+  return `${lines.join("\n")}\n`;
+}
+
+function groupDiagramNodes(nodes) {
+  const groups = [];
+  const byTitle = new Map();
+  for (const node of nodes) {
+    const title = node.group || "Review files";
+    let group = byTitle.get(title);
+    if (!group) {
+      group = {
+        id: `g${groups.length}`,
+        title,
+        nodes: [],
+      };
+      groups.push(group);
+      byTitle.set(title, group);
+    }
+    group.nodes.push(node);
+  }
+  return groups;
+}
+
+function diagramSnapshotHash(context, scope) {
+  const entries = sessionFileEntries(context)
+    .map((entry) => [
+      entry.path,
+      entry.group ?? "",
+      entry.reason ?? "",
+      entry.ordered ? "ordered" : "unordered",
+      entry.excluded ? "excluded" : "included",
+      entry.missing ? "missing" : "present",
+    ].join(":"))
+    .join("\n");
+  return `diagram-snapshot-${rustHashStrings([
+    context.repoRoot,
+    context.sessionId,
+    context.target.diffTarget ?? "HEAD",
+    scope,
+    JSON.stringify(context.manifest),
+    entries,
+  ])}`;
+}
+
+function emitDiagramResult(diagram, path, cached, args) {
+  if (args.json) {
+    writeStdout({
+      path,
+      cached,
+      diagram,
+    });
+    return;
+  }
+
+  console.log(`${cached ? "diagram cached" : "diagram created"}: ${path}`);
+}
+
+function loadDiagramByArgs(args) {
+  const repoRoot = gitRoot(args.repo ?? ".");
+  const path = resolveDiagramPath(repoRoot, args);
+  const diagram = readJson(path);
+  return { diagram, path };
+}
+
+function resolveDiagramPath(repoRoot, args) {
+  const explicit = clean(args.id ?? args.diagram ?? args._?.[0]);
+  const records = listDiagramRecords(repoRoot);
+
+  if (explicit && explicit !== "active") {
+    if (explicit.includes("/") || explicit.endsWith(DIAGRAM_FILE_SUFFIX)) {
+      const resolved = resolve(explicit);
+      if (!existsSync(resolved)) {
+        fail(`Review diagram not found: ${resolved}`);
+      }
+      return resolved;
+    }
+
+    const byId = records.find((record) => record.diagram.id === explicit);
+    if (!byId) {
+      fail(`Review diagram not found: ${explicit}`);
+    }
+    return byId.path;
+  }
+
+  const context = loadNotesContext(args);
+  const scope = normalizeDiagramScope(args.scope ?? "session");
+  const exactPath = diagramPathForSession(repoRoot, context.sessionId, scope);
+  if (existsSync(exactPath)) {
+    return exactPath;
+  }
+
+  const latestForSession = records.find(
+    (record) => record.diagram.sessionId === context.sessionId,
+  );
+  if (latestForSession) {
+    return latestForSession.path;
+  }
+
+  fail(`No review diagram found for active session ${context.sessionId}`);
+}
+
+function listDiagramRecords(repoRoot) {
+  const diagramsDir = repoStorage(repoRoot).diagramsDir;
+  if (!existsSync(diagramsDir)) {
+    return [];
+  }
+
+  return readdirSync(diagramsDir)
+    .filter((name) => name.endsWith(DIAGRAM_FILE_SUFFIX))
+    .map((name) => {
+      const path = join(diagramsDir, name);
+      try {
+        return { path, diagram: readJson(path) };
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean)
+    .sort((a, b) =>
+      String(b.diagram.updatedAt ?? "").localeCompare(String(a.diagram.updatedAt ?? "")),
+    );
+}
+
+function diagramPathForSession(repoRoot, sessionId, scope) {
+  return join(repoStorage(repoRoot).diagramsDir, `${sessionId}-${scope}${DIAGRAM_FILE_SUFFIX}`);
+}
+
+function readDiagramSourceArg(args) {
+  if (args.stdin) {
+    return readFileSync(0, "utf8").replace(/\n$/, "");
+  }
+  if (args.source) {
+    return readFileSync(resolve(args.source), "utf8");
+  }
+  return required(args.body ?? args.text ?? args.mermaid, "diagram source");
+}
+
+function isTsLikePath(path) {
+  return /\.[cm]?[tj]sx?$/.test(path);
+}
+
+function getTsMorphProject() {
+  if (!TsMorphProject) {
+    TsMorphProject = require("ts-morph").Project;
+  }
+  return TsMorphProject;
+}
+
+function findTsConfig(repoRoot) {
+  const tsconfig = join(repoRoot, "tsconfig.json");
+  return existsSync(tsconfig) ? tsconfig : null;
+}
+
+function resolveImportCandidate(repoRoot, sourcePath, specifier) {
+  if (!specifier.startsWith(".")) {
+    return null;
+  }
+
+  const base = resolve(dirname(join(repoRoot, sourcePath)), specifier);
+  const candidates = [
+    base,
+    `${base}.ts`,
+    `${base}.tsx`,
+    `${base}.js`,
+    `${base}.jsx`,
+    `${base}.mjs`,
+    `${base}.cjs`,
+    join(base, "index.ts"),
+    join(base, "index.tsx"),
+    join(base, "index.js"),
+    join(base, "index.jsx"),
+  ];
+
+  return candidates.find((candidate) => existsSync(candidate)) ?? null;
+}
+
+function isPathInside(root, path) {
+  const relativePath = relative(resolve(root), resolve(path));
+  return relativePath === "" || (!relativePath.startsWith("..") && !isAbsolute(relativePath));
+}
+
+function dedupeRelationEdges(edges) {
+  const seen = new Set();
+  const next = [];
+  for (const edge of edges) {
+    const key = `${edge.sourcePath}:${edge.targetPath}:${edge.kind}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    next.push(edge);
+  }
+  return next;
+}
+
+function compactDiagramPath(path) {
+  const parts = path.split("/");
+  if (parts.length <= 3) {
+    return path;
+  }
+  return `${parts[0]}/…/${parts.slice(-2).join("/")}`;
+}
+
+function mermaidText(value) {
+  return String(value)
+    .replace(/\\/g, "/")
+    .replace(/"/g, "'")
+    .replace(/\[/g, "(")
+    .replace(/\]/g, ")")
+    .replace(/[{}]/g, "")
+    .replace(/[|]/g, "/")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function readSourceManifest(args) {
@@ -1617,6 +2477,7 @@ function repoStorage(repoRoot) {
     repoKey,
     root,
     sessionsDir: join(root, "sessions"),
+    diagramsDir: join(root, "diagrams"),
     activeSessionPath: join(root, "active-session.json"),
   };
 }
@@ -1736,6 +2597,8 @@ function parseArgs(rawArgs) {
       "activate",
       "legacy",
       "remove-legacy",
+      "with-diagram",
+      "force",
       "all",
       "append",
     ]);
@@ -1937,6 +2800,7 @@ Usage:
   review-desk session create --repo . --target commit --commit 5315b7c
   review-desk session create --repo . --target range --from main --to HEAD
   review-desk session create --repo . --target pr --pr 123
+  review-desk session create --repo . --target pr --pr 123 --with-diagram
   review-desk session create --repo . --stdin < manifest.json
   review-desk session activate /path/to/session.review-session.json
   review-desk session migrate --repo . [--remove-legacy]
@@ -1952,6 +2816,12 @@ Usage:
   review-desk notes private --repo . --path src/file.ts --body "Scratch note"
   review-desk notes draft --repo . --path src/file.ts --body "Publishable PR review text"
   review-desk notes status --repo . --path src/file.ts --status reviewed
+  review-desk diagrams create --repo . [--scope session|neighbors|deep]
+  review-desk diagrams create --repo . --target commit --commit 5315b7c
+  review-desk diagrams list --repo . [--json]
+  review-desk diagrams get --repo . [--json]
+  review-desk diagrams export --repo . --output review-map.mmd
+  review-desk diagrams update --repo . --stdin < review-map.mmd
 
 Aliases:
   review-desk create-session --repo . [--base main] [--head feature]
@@ -1959,6 +2829,7 @@ Aliases:
   review-desk list --repo .
 
 session create writes to Review Desk app data and marks it active.
+diagrams create uses the active review session by default and writes to app data.
 Use --output only when you explicitly want to export a manifest elsewhere.
 The desktop app auto-loads the active session for an open repo.
 Publishable drafts and --visibility review are only available for pull request sessions.`);
