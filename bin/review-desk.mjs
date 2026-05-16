@@ -21,7 +21,7 @@ const LEGACY_SESSION_DIR = ".review-desk/sessions";
 const LEGACY_ACTIVE_SESSION_PATH = ".review-desk/active-session.json";
 const SESSION_FILE_SUFFIX = ".review-session.json";
 const DIAGRAM_FILE_SUFFIX = ".review-diagram.json";
-const DIAGRAM_ANALYZER_VERSION = 1;
+const DIAGRAM_ANALYZER_VERSION = 2;
 const MAX_DIAGRAM_NODES = 80;
 const MAX_DIAGRAM_EDGES = 200;
 const MAX_AST_FILE_BYTES = 256 * 1024;
@@ -826,20 +826,43 @@ function exportDiagram(args) {
 
 function updateDiagram(args) {
   const { diagram, path } = loadDiagramByArgs(args);
-  const source = readDiagramSourceArg(args);
+  const update = readDiagramUpdateArg(args);
+  const source = update.source ?? clean(update.overview?.source) ?? diagram.source;
   const now = new Date().toISOString();
-  const warnings = [
-    ...(diagram.warnings ?? []).filter(
-      (warning) => warning.code !== "manual-source-edit",
-    ),
-    {
-      code: "manual-source-edit",
-      message: "Mermaid source was manually edited; node and edge metadata may be stale.",
-    },
-  ];
+  const warnings = (diagram.warnings ?? []).filter(
+    (warning) => warning.code !== "manual-source-edit" && warning.code !== "manual-overview-source",
+  );
+  if (!update.metadata) {
+    warnings.push({
+      code: "manual-overview-source",
+      message: "Overview Mermaid source was manually edited; drilldown metadata was preserved.",
+    });
+  }
+  const overview = update.overview
+    ? {
+        version: 1,
+        ...(diagram.overview ?? {}),
+        ...update.overview,
+        source,
+        nodes: update.overview.nodes?.length
+          ? normalizeOverviewNodes(update.overview.nodes)
+          : normalizeOverviewNodes(diagram.overview?.nodes ?? []),
+        edges: update.overview.edges?.length
+          ? normalizeOverviewEdges(update.overview.edges)
+          : normalizeOverviewEdges(diagram.overview?.edges ?? []),
+        updatedAt: now,
+      }
+    : diagram.overview
+      ? {
+          ...diagram.overview,
+          source,
+          updatedAt: now,
+        }
+      : undefined;
   const next = {
     ...diagram,
     source,
+    ...(overview ? { overview } : {}),
     warnings,
     updatedAt: now,
   };
@@ -852,6 +875,38 @@ function updateDiagram(args) {
   }
 
   console.log(`updated diagram: ${path}`);
+}
+
+function readDiagramUpdateArg(args) {
+  const raw = readDiagramSourceArg(args);
+  const trimmed = raw.trim();
+  const metadata =
+    Boolean(args.metadata ?? args["overview-json"]) ||
+    args.format === "json" ||
+    trimmed.startsWith("{");
+
+  if (!metadata) {
+    return { source: raw, overview: null, metadata: false };
+  }
+
+  let payload = null;
+  try {
+    payload = JSON.parse(raw);
+  } catch (error) {
+    fail(`Failed to parse diagram metadata JSON: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  const overviewPayload = payload.overview ?? payload;
+  return {
+    source: clean(payload.source ?? payload.mermaid ?? overviewPayload.source),
+    overview: {
+      ...overviewPayload,
+      source: clean(overviewPayload.source ?? payload.source ?? payload.mermaid) ?? undefined,
+      nodes: normalizeOverviewNodes(overviewPayload.nodes ?? []),
+      edges: normalizeOverviewEdges(overviewPayload.edges ?? []),
+    },
+    metadata: true,
+  };
 }
 
 function loadDiagramContext(args) {
@@ -962,11 +1017,10 @@ function buildReviewDiagram(context, scope, snapshotHash, previous) {
     });
   }
 
-  const pathToNode = new Map(
-    nodes.filter((node) => node.path).map((node) => [node.path, node]),
-  );
+  const pathToNode = new Map(nodes.filter((node) => node.path).map((node) => [node.path, node]));
   const edges = buildDiagramEdges(nodes, pathToNode, relations.edges, warnings);
-  const source = renderMermaidReviewMap(context, nodes, edges, warnings);
+  const overview = buildDiagramOverview(context, nodes, edges, previous);
+  const source = clean(overview.source) ?? renderMermaidOverviewMap(context, overview);
 
   return {
     version: 1,
@@ -978,6 +1032,7 @@ function buildReviewDiagram(context, scope, snapshotHash, previous) {
     scope,
     format: "mermaid",
     source,
+    overview,
     targetLabel: context.target.label,
     target: context.target.request,
     snapshotHash,
@@ -1299,6 +1354,210 @@ function groupDiagramNodes(nodes) {
     group.nodes.push(node);
   }
   return groups;
+}
+
+function buildDiagramOverview(context, nodes, edges, previous) {
+  const generated = generatedDiagramOverview(context, nodes, edges);
+  const previousOverview = previous?.overview && typeof previous.overview === "object"
+    ? previous.overview
+    : null;
+  const manuallyEditedSource = previous?.warnings?.some(
+    (warning) => warning.code === "manual-source-edit" || warning.code === "manual-overview-source",
+  )
+    ? clean(previous?.source)
+    : null;
+  const source = clean(previousOverview?.source) ?? manuallyEditedSource ?? generated.source;
+  const previousNodes = Array.isArray(previousOverview?.nodes)
+    ? normalizeOverviewNodes(previousOverview.nodes)
+    : [];
+  const previousEdges = Array.isArray(previousOverview?.edges)
+    ? normalizeOverviewEdges(previousOverview.edges)
+    : [];
+
+  return {
+    version: 1,
+    source,
+    nodes: previousNodes.length > 0 ? previousNodes : generated.nodes,
+    edges: previousEdges.length > 0 ? previousEdges : generated.edges,
+    generatedAt: previousOverview?.generatedAt ?? new Date().toISOString(),
+  };
+}
+
+function generatedDiagramOverview(context, nodes, edges) {
+  const fileNodes = nodes.filter((node) => node.path && !node.collapsed);
+  const groups = groupDiagramNodes(fileNodes);
+  const overviewNodes = groups.map((group, index) => {
+    const paths = group.nodes.map((node) => node.path).filter(Boolean);
+    const testCount = group.nodes.filter((node) => node.kind === "test").length;
+    const label = `${group.title}\n${paths.length} files${testCount ? `, ${testCount} tests` : ""}`;
+    return {
+      id: `group-${index + 1}`,
+      label,
+      description: group.title,
+      kind: "group",
+      groups: [group.title],
+      paths,
+      fileIds: group.nodes.map((node) => node.fileId).filter(Boolean),
+    };
+  });
+  const groupByNodeId = new Map();
+  for (const group of groups) {
+    for (const node of group.nodes) {
+      groupByNodeId.set(node.id, group.title);
+    }
+  }
+  const overviewNodeByGroup = new Map(
+    overviewNodes.flatMap((node) => node.groups.map((group) => [group, node.id])),
+  );
+  const edgeCounts = new Map();
+
+  for (const edge of edges) {
+    const sourceGroup = groupByNodeId.get(edge.source);
+    const targetGroup = groupByNodeId.get(edge.target);
+    if (!sourceGroup || !targetGroup || sourceGroup === targetGroup) {
+      continue;
+    }
+    const source = overviewNodeByGroup.get(sourceGroup);
+    const target = overviewNodeByGroup.get(targetGroup);
+    if (!source || !target) {
+      continue;
+    }
+    const key = `${source}->${target}`;
+    const current = edgeCounts.get(key) ?? {
+      source,
+      target,
+      count: 0,
+      kinds: new Set(),
+    };
+    current.count += 1;
+    current.kinds.add(edge.kind);
+    edgeCounts.set(key, current);
+  }
+
+  const overviewEdges = [...edgeCounts.values()].map((edge, index) => ({
+    id: `overview-edge-${index + 1}`,
+    source: edge.source,
+    target: edge.target,
+    label: overviewEdgeLabel(edge),
+  }));
+  const overview = {
+    version: 1,
+    source: "",
+    nodes: overviewNodes,
+    edges: overviewEdges,
+    generatedAt: new Date().toISOString(),
+  };
+  overview.source = renderMermaidOverviewMap(context, overview);
+  return overview;
+}
+
+function overviewEdgeLabel(edge) {
+  if (edge.kinds.has("import")) {
+    return edge.count > 1 ? `${edge.count} imports` : "imports";
+  }
+  if (edge.kinds.has("test")) {
+    return edge.count > 1 ? `${edge.count} tests` : "tests";
+  }
+  return "review flow";
+}
+
+function normalizeOverviewNodes(nodes) {
+  const seen = new Set();
+  const normalized = [];
+  for (const node of nodes) {
+    const id = clean(node?.id);
+    if (!id || seen.has(id)) {
+      continue;
+    }
+    seen.add(id);
+    normalized.push({
+      id,
+      label: clean(node.label) ?? id,
+      description: clean(node.description) ?? null,
+      kind: clean(node.kind) ?? "concept",
+      groups: normalizeStringList(node.groups),
+      paths: normalizeStringList(node.paths),
+      fileIds: normalizeStringList(node.fileIds),
+    });
+  }
+  return normalized;
+}
+
+function normalizeOverviewEdges(edges) {
+  const normalized = [];
+  for (const edge of edges) {
+    const source = clean(edge?.source);
+    const target = clean(edge?.target);
+    if (!source || !target || source === target) {
+      continue;
+    }
+    normalized.push({
+      id: clean(edge.id) ?? `overview-edge-${normalized.length + 1}`,
+      source,
+      target,
+      label: clean(edge.label) ?? "",
+    });
+  }
+  return normalized;
+}
+
+function normalizeStringList(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.map((item) => clean(item)).filter(Boolean);
+}
+
+function renderMermaidOverviewMap(context, overview) {
+  const lines = [
+    "flowchart LR",
+    `  %% Review Desk overview for ${context.target.label}`,
+  ];
+  const nodeIdMap = new Map();
+
+  for (const node of overview.nodes ?? []) {
+    const id = mermaidNodeId(node.id, nodeIdMap);
+    lines.push(`  ${id}["${mermaidText(node.label)}"]`);
+  }
+
+  for (const edge of overview.edges ?? []) {
+    const source = nodeIdMap.get(edge.source);
+    const target = nodeIdMap.get(edge.target);
+    if (!source || !target) {
+      continue;
+    }
+    const label = clean(edge.label);
+    lines.push(label ? `  ${source} -->|${mermaidText(label)}| ${target}` : `  ${source} --> ${target}`);
+  }
+
+  lines.push(
+    "  classDef concept fill:#1f2633,stroke:#8fb3ff,color:#f8fafc;",
+    "  classDef group fill:#13271f,stroke:#6ee7b7,color:#f8fafc;",
+  );
+
+  for (const node of overview.nodes ?? []) {
+    const id = nodeIdMap.get(node.id);
+    if (id) {
+      lines.push(`  class ${id} ${node.kind === "group" ? "group" : "concept"};`);
+    }
+  }
+
+  return `${lines.join("\n")}\n`;
+}
+
+function mermaidNodeId(id, existing) {
+  const base = String(id)
+    .replace(/[^a-zA-Z0-9_]/g, "_")
+    .replace(/^([^a-zA-Z_])/, "_$1")
+    .slice(0, 60) || "node";
+  let next = base;
+  let suffix = 2;
+  while ([...existing.values()].includes(next)) {
+    next = `${base}_${suffix}`;
+    suffix += 1;
+  }
+  existing.set(id, next);
+  return next;
 }
 
 function diagramSnapshotHash(context, scope) {
@@ -2823,6 +3082,7 @@ Usage:
   review-desk diagrams get --repo . [--json]
   review-desk diagrams export --repo . --output review-map.mmd
   review-desk diagrams update --repo . --stdin < review-map.mmd
+  review-desk diagrams update --repo . --format json --stdin < overview.json
 
 Aliases:
   review-desk create-session --repo . [--base main] [--head feature]

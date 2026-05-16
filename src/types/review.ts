@@ -264,6 +264,7 @@ export type ReviewDiagram = {
   scope: ReviewDiagramScope;
   format: "mermaid";
   source: string;
+  overview?: ReviewDiagramOverview | null;
   targetLabel: string;
   target: ReviewTargetRequest;
   snapshotHash: string;
@@ -273,6 +274,32 @@ export type ReviewDiagram = {
   stats: ReviewDiagramStats;
   createdAt: string;
   updatedAt: string;
+};
+
+export type ReviewDiagramOverview = {
+  version?: number | null;
+  source?: string | null;
+  nodes: ReviewDiagramOverviewNode[];
+  edges: ReviewDiagramOverviewEdge[];
+  generatedAt?: string | null;
+  updatedAt?: string | null;
+};
+
+export type ReviewDiagramOverviewNode = {
+  id: string;
+  label: string;
+  description?: string | null;
+  kind?: "concept" | "group" | string | null;
+  groups?: string[];
+  paths?: string[];
+  fileIds?: string[];
+};
+
+export type ReviewDiagramOverviewEdge = {
+  id?: string | null;
+  source: string;
+  target: string;
+  label?: string | null;
 };
 
 export type ReviewDiagramNode = {

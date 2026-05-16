@@ -50,6 +50,11 @@ Diagram source is editable Mermaid. Diagram generation is explicit: normal
 session creation stays fast unless `--with-diagram` or `review-desk diagrams
 create` is requested.
 
+Review maps are layered. The visible first view is a compact conceptual overview
+authored by an agent or generated from review groups. The generated file nodes
+and edges remain in the same diagram JSON as drilldown metadata, so the app can
+move from overview to group to file focus without showing the full graph first.
+
 `.review-desk/` inside a repo is legacy/export-only state. Use `--output` only
 when you explicitly want a portable manifest outside the default app storage.
 
@@ -156,6 +161,7 @@ review-desk diagrams create --repo . --target commit --commit 5315b7c
 review-desk diagrams list --repo . --json
 review-desk diagrams get --repo .
 review-desk diagrams update --repo . --stdin < review-map.mmd
+review-desk diagrams update --repo . --format json --stdin < overview.json
 review-desk diagrams export --repo . --output review-map.mmd
 ```
 
@@ -164,6 +170,38 @@ is `session`, which maps only included review-session files and preserves agent
 order/groups/reasons. `neighbors` adds capped direct import neighbors. `deep`
 currently uses the same capped expansion and leaves room for agent-authored
 Mermaid refinements.
+
+Use JSON updates when the agent is authoring the progressive-disclosure
+overview:
+
+```json
+{
+  "source": "flowchart LR\n  ui[\"UI surfaces\"] --> contract[\"Shared contract\"]\n",
+  "overview": {
+    "nodes": [
+      {
+        "id": "ui",
+        "label": "UI surfaces",
+        "description": "Routes, forms, tables, and actions",
+        "groups": ["01 Entry points", "02 UI consumers"],
+        "paths": ["src/App.tsx"]
+      },
+      {
+        "id": "contract",
+        "label": "Shared contract",
+        "groups": ["03 State/data flow"]
+      }
+    ],
+    "edges": [
+      { "source": "ui", "target": "contract", "label": "uses" }
+    ]
+  }
+}
+```
+
+Raw Mermaid updates still work for visual-only edits, but JSON updates are the
+metadata-safe path for agents because they preserve the generated file graph and
+tell the app how overview concepts map to review groups/files.
 
 Backwards-compatible aliases still work:
 
@@ -236,6 +274,8 @@ Supported targets:
 - Use `review-desk session files ...` to add, remove, reorder, or regroup files in an active session.
 - Use `review-desk notes ...` to read/write viewed status, private notes, and inline comments; publishable drafts and review-visible comments are PR-only.
 - Use `review-desk diagrams create --repo .` only when the user or task asks for a map; diagrams are optional and attached to the active session.
+- For complex maps, author a compact conceptual overview and attach overview metadata with `review-desk diagrams update --format json --stdin`.
+- Map overview nodes to session `groups`, `paths`, or `fileIds`; do not dump the full generated file graph as the first view.
 - Put every intentionally ordered file in `fileOrder`.
 - Preserve review workflow order, not alphabetical order.
 - Use short, concrete `reason` text. One sentence is enough.

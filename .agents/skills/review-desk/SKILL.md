@@ -67,6 +67,11 @@ when the review is complex enough that a visual session map is explicitly useful
 The default diagram scope is `session`, which uses the active agent-created
 session order/groups/reasons as the source of truth.
 
+Review maps use progressive disclosure. The first view should be a compact
+conceptual overview, not the full generated file graph. The CLI keeps generated
+file nodes and edges as drilldown metadata, and agents should attach overview
+metadata that maps conceptual nodes to session groups or files.
+
 Agents should use the CLI for this state:
 
 ```bash
@@ -85,6 +90,7 @@ review-desk diagrams create --repo .
 review-desk diagrams create --repo . --scope neighbors
 review-desk diagrams get --repo .
 review-desk diagrams update --repo . --stdin < review-map.mmd
+review-desk diagrams update --repo . --format json --stdin < overview.json
 review-desk diagrams export --repo . --output review-map.mmd
 ```
 
@@ -110,6 +116,39 @@ Exclude noisy generated files only when they are actually in the diff.
 For diagrams, create the review session first. A diagram should visualize the
 curated session, not rediscover the PR from raw Git state. Use `--with-diagram`
 only when the user asks for session creation and a map in one step.
+
+For complex PRs, author a layered map:
+
+1. Use the ordered session groups/files as the file-review source of truth.
+2. Write a compact Mermaid overview that names the concepts/data flow a reviewer
+   needs first.
+3. Attach overview metadata with `review-desk diagrams update --format json --stdin`.
+4. Map each overview node to one or more session `groups`, `paths`, or `fileIds`.
+5. Avoid showing the full file graph as the first view. Use raw Mermaid-only
+   updates only when the user asked for a visual tweak and drilldown metadata is
+   not needed.
+
+Overview metadata JSON:
+
+```json
+{
+  "source": "flowchart LR\n  ui[\"UI\"] --> api[\"API\"]\n",
+  "overview": {
+    "nodes": [
+      {
+        "id": "ui",
+        "label": "UI surfaces",
+        "description": "Routes, forms, tables, and actions",
+        "groups": ["01 Entry points", "02 UI consumers"],
+        "paths": ["src/App.tsx"]
+      }
+    ],
+    "edges": [
+      { "source": "ui", "target": "api", "label": "calls" }
+    ]
+  }
+}
+```
 
 ## Agent-Provided Order
 
