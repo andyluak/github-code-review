@@ -36,9 +36,9 @@ Reviewer progress and notes are stored beside the session data:
 repos/<repo-name>-<stable-hash>/workspace-state/<session-id>.json
 ```
 
-That workspace-state file owns viewed/reviewed status, private notes,
-publishable drafts, and inline comments. Browser `localStorage` is only used as
-a migration source for older app builds.
+That workspace-state file owns viewed/reviewed status, private notes, PR-only
+publishable drafts, and inline comments. Browser `localStorage` is only used as a
+migration source for older app builds.
 
 `.review-desk/` inside a repo is legacy/export-only state. Use `--output` only
 when you explicitly want a portable manifest outside the default app storage.
@@ -106,6 +106,9 @@ review-desk session files organize --repo . --path src/file.ts --group "Tests" -
 Queue edits create a new active app-data manifest and copy the existing
 workspace-state to the new session id, so viewed/reviewed status, private notes,
 publishable drafts, and inline comments survive add/remove/reorder operations.
+Publishable drafts and review-visible inline comments are only available for
+pull request sessions; commit, range, branch, and working-tree sessions keep
+notes private.
 
 Read active Review Desk notes and file progress:
 
@@ -119,13 +122,14 @@ Write active Review Desk workspace state:
 ```bash
 review-desk notes add --repo . --path src/file.ts --line 42 --body "Check this"
 review-desk notes private --repo . --path src/file.ts --body "Scratch note"
-review-desk notes draft --repo . --path src/file.ts --body "Publishable review text"
+review-desk notes draft --repo . --path src/file.ts --body "Publishable PR review text"
 review-desk notes status --repo . --path src/file.ts --status reviewed
 ```
 
 `notes add` creates inline comments and defaults to private notes on the new
-side of the diff. Use `--visibility review` for publishable inline comments,
-`--side old` for removed lines, and `--stdin` for multi-line text.
+side of the diff. In pull request sessions, use `--visibility review` for
+publishable inline comments. Use `--side old` for removed lines and `--stdin`
+for multi-line text.
 
 Backwards-compatible aliases still work:
 
@@ -196,7 +200,7 @@ Supported targets:
 - Use `target` for the actual review target.
 - Use Git refs that exist locally. PR targets may use `gh` and `git fetch` to resolve the head ref.
 - Use `review-desk session files ...` to add, remove, reorder, or regroup files in an active session.
-- Use `review-desk notes ...` to read/write viewed status, private notes, publishable drafts, and inline comments.
+- Use `review-desk notes ...` to read/write viewed status, private notes, and inline comments; publishable drafts and review-visible comments are PR-only.
 - Put every intentionally ordered file in `fileOrder`.
 - Preserve review workflow order, not alphabetical order.
 - Use short, concrete `reason` text. One sentence is enough.

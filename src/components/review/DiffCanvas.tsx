@@ -51,6 +51,7 @@ type DiffCanvasProps = {
   file: ReviewFile | null;
   fileState: SessionFileState | null;
   jumpTarget: JumpTarget | null;
+  supportsReviewComments: boolean;
   onScrollHandled: () => void;
   onMarkViewed: () => void;
   onMarkReviewed: () => void;
@@ -90,6 +91,7 @@ export const DiffCanvas = memo(function DiffCanvas({
   file,
   fileState,
   jumpTarget,
+  supportsReviewComments,
   onScrollHandled,
   onMarkViewed,
   onMarkReviewed,
@@ -163,9 +165,16 @@ export const DiffCanvas = memo(function DiffCanvas({
     : false;
   const effectiveMode: DiffViewMode = isOneSided ? "unified" : viewMode;
   const inlineComments = fileState?.inlineComments ?? EMPTY_INLINE_COMMENTS;
+  const visibleInlineComments = useMemo(
+    () =>
+      supportsReviewComments
+        ? inlineComments
+        : inlineComments.filter((comment) => comment.visibility === "private"),
+    [inlineComments, supportsReviewComments],
+  );
   const commentsByPosition = useMemo(
-    () => groupCommentsByPosition(inlineComments),
-    [inlineComments],
+    () => groupCommentsByPosition(visibleInlineComments),
+    [visibleInlineComments],
   );
   const splitRowsByHunk = useMemo(() => {
     if (!file || effectiveMode !== "split" || isOneSided) {
@@ -216,6 +225,7 @@ export const DiffCanvas = memo(function DiffCanvas({
     if (!file || !draftTarget || !body) {
       return;
     }
+    const visibility = supportsReviewComments ? draftVisibility : "private";
     const now = new Date().toISOString();
     onSaveInlineComment(file.id, {
       id: createCommentId(),
@@ -227,12 +237,12 @@ export const DiffCanvas = memo(function DiffCanvas({
       startLine: draftTarget.startLine,
       endLine: draftTarget.endLine,
       body,
-      visibility: draftVisibility,
+      visibility,
       createdAt: now,
       updatedAt: now,
     });
     setDraftTarget(null);
-  }, [draftTarget, file, onSaveInlineComment]);
+  }, [draftTarget, file, onSaveInlineComment, supportsReviewComments]);
 
   if (!file) {
     return (
@@ -364,6 +374,7 @@ export const DiffCanvas = memo(function DiffCanvas({
                           positions.includes(draftTarget.endDiffPosition) ? (
                             <InlineCommentComposer
                               target={draftTarget}
+                              supportsReviewComments={supportsReviewComments}
                               onSave={saveDraftComment}
                               onCancel={() => {
                                 setDraftTarget(null);
@@ -405,6 +416,7 @@ export const DiffCanvas = memo(function DiffCanvas({
                           !isLineSelectionDragging ? (
                             <InlineCommentComposer
                               target={draftTarget}
+                              supportsReviewComments={supportsReviewComments}
                               onSave={saveDraftComment}
                               onCancel={() => {
                                 setDraftTarget(null);
@@ -437,6 +449,7 @@ function areDiffCanvasPropsEqual(
   return (
     previous.file === next.file &&
     previous.jumpTarget === next.jumpTarget &&
+    previous.supportsReviewComments === next.supportsReviewComments &&
     effectiveFileStatus(previous) === effectiveFileStatus(next) &&
     sameInlineComments(previous.fileState, next.fileState) &&
     previous.onScrollHandled === next.onScrollHandled &&
@@ -654,17 +667,25 @@ const UnifiedRow = memo(function UnifiedRow({
 
 function InlineCommentComposer({
   target,
+  supportsReviewComments,
   onSave,
   onCancel,
 }: {
   target: CommentTarget;
+  supportsReviewComments: boolean;
   onSave: (body: string, visibility: InlineCommentVisibility) => void;
   onCancel: () => void;
 }) {
   const [body, setBody] = useState("");
   const [visibility, setVisibility] =
-    useState<InlineCommentVisibility>("review");
+    useState<InlineCommentVisibility>(supportsReviewComments ? "review" : "private");
   const canSave = body.trim().length > 0;
+
+  useEffect(() => {
+    if (!supportsReviewComments && visibility === "review") {
+      setVisibility("private");
+    }
+  }, [supportsReviewComments, visibility]);
 
   return (
     <div className="border-l-[3px] border-[var(--rd-vermillion-line)] bg-[var(--rd-ink-3)] px-4 py-3">
@@ -708,12 +729,14 @@ function InlineCommentComposer({
             label="Private"
             onClick={() => setVisibility("private")}
           />
-          <CommentModeButton
-            active={visibility === "review"}
-            icon={<MessageSquare className="size-3.5" />}
-            label="Review"
-            onClick={() => setVisibility("review")}
-          />
+          {supportsReviewComments ? (
+            <CommentModeButton
+              active={visibility === "review"}
+              icon={<MessageSquare className="size-3.5" />}
+              label="Review"
+              onClick={() => setVisibility("review")}
+            />
+          ) : null}
         </div>
         <Button
           type="button"

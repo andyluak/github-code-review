@@ -479,7 +479,9 @@ function getNotes(args) {
     ...defaultFileState(),
     ...context.workspaceState[file.id],
   };
-  const entry = noteEntry(file.id, file.path, state);
+  const entry = noteEntry(file.id, file.path, state, {
+    includeReviewArtifacts: supportsReviewComments(context),
+  });
 
   if (args.json) {
     writeStdout({
@@ -516,6 +518,9 @@ function addInlineNote(args) {
   const path = normalizeRepoRelativePath(context.repoRoot, required(args.path ?? args._[0], "file path"));
   const body = readBodyArg(args);
   const visibility = normalizeVisibility(args.visibility ?? args.v ?? "private");
+  if (visibility === "review" && !supportsReviewComments(context)) {
+    fail("Review-visibility inline comments are only available for pull request review sessions.");
+  }
   const side = normalizeSide(args.side ?? "new");
   const startLine = coerceRequiredNumber(args.line ?? args["start-line"], "line");
   const endLine = coerceNumber(args["end-line"]) ?? startLine;
@@ -562,6 +567,9 @@ function addInlineNote(args) {
 
 function setTextNote(args, field) {
   const context = loadNotesContext(args);
+  if (field === "publishableDraft" && !supportsReviewComments(context)) {
+    fail("Publishable drafts are only available for pull request review sessions.");
+  }
   const path = normalizeRepoRelativePath(context.repoRoot, required(args.path ?? args._[0], "file path"));
   const body = readBodyArg(args);
   const file = resolveReviewFile(context, path);
@@ -584,7 +592,9 @@ function setTextNote(args, field) {
       repoRoot: context.repoRoot,
       sessionId: context.sessionId,
       workspaceStatePath: context.workspaceStatePath,
-      file: noteEntry(file.id, file.path, context.workspaceState[file.id]),
+      file: noteEntry(file.id, file.path, context.workspaceState[file.id], {
+        includeReviewArtifacts: supportsReviewComments(context),
+      }),
     });
     return;
   }
@@ -613,7 +623,9 @@ function setFileStatus(args) {
       repoRoot: context.repoRoot,
       sessionId: context.sessionId,
       workspaceStatePath: context.workspaceStatePath,
-      file: noteEntry(file.id, file.path, context.workspaceState[file.id]),
+      file: noteEntry(file.id, file.path, context.workspaceState[file.id], {
+        includeReviewArtifacts: supportsReviewComments(context),
+      }),
     });
     return;
   }
@@ -1239,6 +1251,7 @@ function buildReviewFileIndex(repoRoot, target, manifest, workspaceState) {
 function noteEntries(context, options = {}) {
   const entries = [];
   const seenIds = new Set();
+  const includeReviewArtifacts = supportsReviewComments(context);
 
   for (const [fileId, file] of context.files.byId.entries()) {
     const state = context.workspaceState[fileId];
@@ -1248,7 +1261,7 @@ function noteEntries(context, options = {}) {
     const entry = noteEntry(fileId, file.path, {
       ...defaultFileState(),
       ...state,
-    });
+    }, { includeReviewArtifacts });
     if (options.includeAll || hasFileStateContent(entry)) {
       entries.push(entry);
       seenIds.add(fileId);
@@ -1263,7 +1276,7 @@ function noteEntries(context, options = {}) {
     const entry = noteEntry(fileId, commentPath ?? null, {
       ...defaultFileState(),
       ...state,
-    });
+    }, { includeReviewArtifacts });
     if (options.includeAll || hasFileStateContent(entry)) {
       entries.push(entry);
     }
@@ -1272,15 +1285,23 @@ function noteEntries(context, options = {}) {
   return entries.sort((a, b) => (a.path ?? a.fileId).localeCompare(b.path ?? b.fileId));
 }
 
-function noteEntry(fileId, path, state) {
+function noteEntry(fileId, path, state, options = {}) {
+  const inlineComments = state.inlineComments ?? [];
+  const includeReviewArtifacts = options.includeReviewArtifacts !== false;
   return {
     fileId,
     path,
     status: state.status ?? "unseen",
     privateNote: state.privateNote ?? "",
-    publishableDraft: state.publishableDraft ?? "",
-    inlineComments: state.inlineComments ?? [],
+    publishableDraft: includeReviewArtifacts ? state.publishableDraft ?? "" : "",
+    inlineComments: includeReviewArtifacts
+      ? inlineComments
+      : inlineComments.filter((comment) => comment.visibility === "private"),
   };
+}
+
+function supportsReviewComments(context) {
+  return context.target?.request?.kind === "pullRequest";
 }
 
 function hasFileStateContent(entry) {
@@ -1929,7 +1950,7 @@ Usage:
   review-desk notes get --repo . --path src/file.ts [--json]
   review-desk notes add --repo . --path src/file.ts --line 42 --body "Check this"
   review-desk notes private --repo . --path src/file.ts --body "Scratch note"
-  review-desk notes draft --repo . --path src/file.ts --body "Publishable review text"
+  review-desk notes draft --repo . --path src/file.ts --body "Publishable PR review text"
   review-desk notes status --repo . --path src/file.ts --status reviewed
 
 Aliases:
@@ -1939,7 +1960,8 @@ Aliases:
 
 session create writes to Review Desk app data and marks it active.
 Use --output only when you explicitly want to export a manifest elsewhere.
-The desktop app auto-loads the active session for an open repo.`);
+The desktop app auto-loads the active session for an open repo.
+Publishable drafts and --visibility review are only available for pull request sessions.`);
 }
 
 function fail(message) {

@@ -113,6 +113,7 @@ function App() {
     () => (activeFile ? workspaceState[activeFile.id] ?? EMPTY_FILE_STATE : null),
     [activeFile, workspaceState],
   );
+  const supportsReviewComments = session?.target.kind === "pullRequest";
 
   const selectedPullRequest = useMemo(() => {
     if (!pullRequestNumber) {
@@ -1033,6 +1034,7 @@ function App() {
                 file={activeFile}
                 fileState={activeFileState}
                 jumpTarget={jumpTarget}
+                supportsReviewComments={supportsReviewComments}
                 onScrollHandled={handleScrollHandled}
                 onMarkViewed={markActiveViewed}
                 onMarkReviewed={markActiveReviewed}

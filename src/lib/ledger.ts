@@ -57,6 +57,7 @@ export function collectLedger(
   workspaceState: ReviewWorkspaceState,
 ): LedgerEntry[] {
   const entries: LedgerEntry[] = [];
+  const supportsReviewComments = session.target.kind === "pullRequest";
 
   for (const file of session.files) {
     const state = workspaceState[file.id];
@@ -76,7 +77,7 @@ export function collectLedger(
     }
 
     const draft = state.publishableDraft?.trim() ?? "";
-    if (draft) {
+    if (supportsReviewComments && draft) {
       entries.push({
         kind: "public-file-draft",
         id: `${file.id}-public-draft`,
@@ -87,6 +88,9 @@ export function collectLedger(
     }
 
     for (const comment of state.inlineComments ?? []) {
+      if (!supportsReviewComments && comment.visibility === "review") {
+        continue;
+      }
       entries.push({
         kind: comment.visibility === "private" ? "private-inline" : "review-inline",
         id: comment.id,

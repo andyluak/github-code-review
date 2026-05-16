@@ -31,7 +31,7 @@ export function EmptyState({ onPickRepo }: EmptyStateProps) {
 
         <p className="mt-8 max-w-xl text-[15px] leading-7 text-[var(--rd-cream-2)]">
           Open a repository, hide generated noise, walk a focused queue, and keep
-          private notes separate from publishable comments.
+          private notes separate from PR comments.
         </p>
 
         <div className="mt-9 flex items-center gap-4">

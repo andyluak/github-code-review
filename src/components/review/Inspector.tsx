@@ -65,6 +65,7 @@ export function Inspector(props: InspectorProps) {
     onScrollHandled,
   } = props;
   const scrollViewportRef = useRef<HTMLDivElement | null>(null);
+  const supportsReviewComments = session.target.kind === "pullRequest";
 
   const ledger = useMemo(
     () => collectLedger(session, workspaceState),
@@ -113,12 +114,16 @@ export function Inspector(props: InspectorProps) {
                 fileState={fileState}
                 onPatch={onPatchFileState}
               />
-              <SectionDivider />
-              <ReplySection
-                file={file}
-                fileState={fileState}
-                onPatch={onPatchFileState}
-              />
+              {supportsReviewComments ? (
+                <>
+                  <SectionDivider />
+                  <ReplySection
+                    file={file}
+                    fileState={fileState}
+                    onPatch={onPatchFileState}
+                  />
+                </>
+              ) : null}
               <SectionDivider />
               <ContextSection session={session} file={file} />
               <SectionDivider />
@@ -126,6 +131,7 @@ export function Inspector(props: InspectorProps) {
                 session={session}
                 ledger={ledger}
                 currentFileId={file.id}
+                supportsReviewComments={supportsReviewComments}
                 onJumpToNote={onJumpToNote}
               />
               <SessionWarnings session={session} />
@@ -136,7 +142,7 @@ export function Inspector(props: InspectorProps) {
         </div>
       </ScrollArea>
 
-      <BasketFooter basket={basket} />
+      {supportsReviewComments ? <BasketFooter basket={basket} /> : null}
     </aside>
   );
 }
@@ -315,11 +321,13 @@ function LedgerSection({
   session,
   ledger,
   currentFileId,
+  supportsReviewComments,
   onJumpToNote,
 }: {
   session: ReviewSession;
   ledger: LedgerEntry[];
   currentFileId: string;
+  supportsReviewComments: boolean;
   onJumpToNote: InspectorProps["onJumpToNote"];
 }) {
   const headingId = useId();
@@ -335,7 +343,8 @@ function LedgerSection({
     () => (scope === "file" ? ledger.filter((entry) => entry.fileId === currentFileId) : ledger),
     [ledger, scope, currentFileId],
   );
-  const filtered = useMemo(() => filterLedger(scoped, filter), [filter, scoped]);
+  const effectiveFilter = supportsReviewComments || filter !== "review" ? filter : "all";
+  const filtered = useMemo(() => filterLedger(scoped, effectiveFilter), [effectiveFilter, scoped]);
   const groups = useMemo(
     () => groupLedgerByFile(session, filtered),
     [filtered, session],
@@ -405,19 +414,21 @@ function LedgerSection({
         >
           <FilterChip
             label="All"
-            active={filter === "all"}
+            active={effectiveFilter === "all"}
             onClick={() => setFilter("all")}
           />
           <FilterChip
             label="Private"
-            active={filter === "private"}
+            active={effectiveFilter === "private"}
             onClick={() => setFilter("private")}
           />
-          <FilterChip
-            label="Review"
-            active={filter === "review"}
-            onClick={() => setFilter("review")}
-          />
+          {supportsReviewComments ? (
+            <FilterChip
+              label="Review"
+              active={filter === "review"}
+              onClick={() => setFilter("review")}
+            />
+          ) : null}
         </div>
         <Button
           type="button"
@@ -446,7 +457,9 @@ function LedgerSection({
         <div className="rounded-md border border-[var(--rd-hair)] bg-[var(--rd-ink-2)] p-3 rd-display-italic text-[12px] text-[var(--rd-graphite)]">
           {scope === "file"
             ? "No notes on this file yet."
-            : "No notes yet. Comment on a line or draft a review to populate the ledger."}
+            : supportsReviewComments
+              ? "No notes yet. Comment on a line or draft a review to populate the ledger."
+              : "No notes yet. Comment on a line or add a private file note to populate the ledger."}
         </div>
       ) : (
         <div className="space-y-3">
