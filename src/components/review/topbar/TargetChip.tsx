@@ -40,6 +40,7 @@ type Props = {
   onPullRequestInputChange: (next: string) => void;
   onPullRequestInputSubmit: () => void;
   onPickPullRequest: (pr: PullRequestSummary) => void;
+  onPickCommit: (sha: string) => void;
   onCreateSession: () => void;
 };
 
@@ -82,6 +83,7 @@ export function TargetChip(props: Props) {
             repoRefs={props.repoRefs}
             disabled={disabled}
             onChange={props.onCommitRefChange}
+            onPickCommit={props.onPickCommit}
             onConfirm={props.onCreateSession}
           />
         ) : props.targetKind === "commitRange" ? (
@@ -138,8 +140,23 @@ function summarize(props: Props): string {
   switch (target.kind) {
     case "workingTree": return "uncommitted changes";
     case "branch":      return `${target.baseRef} ← ${target.headRef}`;
-    case "commit":      return `${target.commit.slice(0, 7)} · ${target.label}`;
+    case "commit":      return target.commit.slice(0, 7);
     case "commitRange": return `${target.fromRef}…${target.toRef}`;
-    case "pullRequest": return target.number !== null && target.number !== undefined ? `#${target.number} ${target.label ?? ""}`.trim() : "set PR";
+    case "pullRequest": {
+      if (target.number === null || target.number === undefined) return "set PR";
+      const head = shortRef(target.headRefName ?? target.headRef);
+      const base = shortRef(target.baseRefName ?? target.baseRef);
+      if (base && head) return `#${target.number} · ${base} ← ${head}`;
+      return `#${target.number}`;
+    }
   }
+}
+
+function shortRef(value: string | null | undefined): string {
+  if (!value) return "";
+  // Strip leading "refs/heads/", "refs/remotes/origin/", etc., keep last meaningful segment.
+  const stripped = value.replace(/^refs\/(heads|remotes|tags)\//, "");
+  const segments = stripped.split("/");
+  if (segments.length > 2) return segments.slice(-2).join("/");
+  return stripped;
 }

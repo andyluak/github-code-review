@@ -65,6 +65,8 @@ export type TopBarProps = {
   onPullRequestInputSubmit: () => void;
   onPickPullRequest: (pr: PullRequestSummary) => void;
   onCreateSession: () => void;
+  onRefreshSession: () => void;
+  onPickCommit: (sha: string) => void;
   onImportAgentSession: () => void;
   onOpenPublish: () => void;
   onSelectReviewHistory: (item: ReviewHistoryItem) => void;
@@ -121,6 +123,7 @@ export function TopBar(props: TopBarProps) {
           onPullRequestInputChange={props.onPullRequestInputChange}
           onPullRequestInputSubmit={props.onPullRequestInputSubmit}
           onPickPullRequest={props.onPickPullRequest}
+          onPickCommit={props.onPickCommit}
           onCreateSession={props.onCreateSession}
         />
 
@@ -147,7 +150,7 @@ export function TopBar(props: TopBarProps) {
           isLoading={props.isLoading}
           publishLabelCount={props.publishLabelCount}
           reviewHistory={props.reviewHistory}
-          onRefresh={props.onCreateSession}
+          onRefresh={props.onRefreshSession}
           onImportAgentSession={props.onImportAgentSession}
           onResetFontZoom={props.onResetFontZoom}
           onOpenPublish={props.onOpenPublish}

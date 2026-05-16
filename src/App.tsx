@@ -53,6 +53,7 @@ import {
   loadReviewSessionSnapshot,
   loadReviewSessionSnapshotForTarget,
   loadWorkspaceState,
+  mergeWorkspaceStates,
   openReviewFile,
   rememberRepo,
   rememberActiveReviewFileId,
@@ -226,6 +227,20 @@ function App() {
   const latestWorkspaceStateRef = useRef<ReviewWorkspaceState>({});
   const workspaceStateReadySessionIdRef = useRef<string | null>(null);
 
+  const replaceWorkspaceState = useCallback((next: ReviewWorkspaceState) => {
+    latestWorkspaceStateRef.current = next;
+    setWorkspaceState(next);
+  }, []);
+
+  const updateWorkspaceState = useCallback(
+    (updater: (current: ReviewWorkspaceState) => ReviewWorkspaceState) => {
+      const next = updater(latestWorkspaceStateRef.current);
+      latestWorkspaceStateRef.current = next;
+      setWorkspaceState(next);
+    },
+    [],
+  );
+
   const fileById = useMemo(() => {
     return new Map(session?.files.map((file) => [file.id, file]) ?? []);
   }, [session]);
@@ -275,7 +290,7 @@ function App() {
 
   const patchFileState = useCallback(
     (fileId: string, patch: Partial<SessionFileState>) => {
-      setWorkspaceState((current) => ({
+      updateWorkspaceState((current) => ({
         ...current,
         [fileId]: {
           ...createDefaultFileState(),
@@ -284,12 +299,12 @@ function App() {
         },
       }));
     },
-    [],
+    [updateWorkspaceState],
   );
 
   const saveInlineComment = useCallback(
     (fileId: string, comment: InlineComment) => {
-      setWorkspaceState((current) => {
+      updateWorkspaceState((current) => {
         const previous = {
           ...createDefaultFileState(),
           ...current[fileId],
@@ -308,11 +323,11 @@ function App() {
         };
       });
     },
-    [],
+    [updateWorkspaceState],
   );
 
   const deleteInlineComment = useCallback((fileId: string, commentId: string) => {
-    setWorkspaceState((current) => {
+    updateWorkspaceState((current) => {
       const previous = {
         ...createDefaultFileState(),
         ...current[fileId],
@@ -328,11 +343,11 @@ function App() {
         },
       };
     });
-  }, []);
+  }, [updateWorkspaceState]);
 
   const saveThreadReply = useCallback(
     (fileId: string, threadId: string, body: string) => {
-      setWorkspaceState((current) => {
+      updateWorkspaceState((current) => {
         const previous = {
           ...createDefaultFileState(),
           ...current[fileId],
@@ -350,7 +365,7 @@ function App() {
         };
       });
     },
-    [],
+    [updateWorkspaceState],
   );
 
   const loadDiagramForSession = useCallback(async (nextSession: ReviewSession) => {
@@ -412,6 +427,16 @@ function App() {
   const applySession = useCallback((nextSession: ReviewSession) => {
     const previousSession = sessionRef.current;
     const previousActiveFileId = activeFileIdRef.current;
+    if (
+      previousSession &&
+      workspaceStateReadySessionIdRef.current === previousSession.id
+    ) {
+      void saveWorkspaceState(
+        previousSession,
+        latestWorkspaceStateRef.current,
+      ).catch(() => {});
+    }
+
     const savedActiveFileId = loadActiveReviewFileId(nextSession.id);
     const fallbackActiveFileId = chooseActiveFileId(
       nextSession,
@@ -441,12 +466,11 @@ function App() {
     sessionRef.current = nextSession;
     setReviewDiagram(null);
     setDiagramError(null);
-    setWorkspaceState((current) => {
-      if (sameSession) {
-        return reconcileWorkspaceState(nextSession, current);
-      }
-      return {};
-    });
+    replaceWorkspaceState(
+      sameSession
+        ? reconcileWorkspaceState(nextSession, latestWorkspaceStateRef.current)
+        : {},
+    );
     setActiveFileId(fallbackActiveFileId);
     setReviewHistory(rememberReviewSession(nextSession));
 
@@ -465,14 +489,12 @@ function App() {
           return;
         }
 
-        const nextWorkspaceState = sameSession
-          ? reconcileWorkspaceState(nextSession, {
-              ...saved,
-              ...latestWorkspaceStateRef.current,
-            })
-          : reconcileWorkspaceState(nextSession, saved);
+        const nextWorkspaceState = reconcileWorkspaceState(
+          nextSession,
+          mergeWorkspaceStates(latestWorkspaceStateRef.current, saved),
+        );
 
-        setWorkspaceState(nextWorkspaceState);
+        replaceWorkspaceState(nextWorkspaceState);
         setActiveFileId(
           chooseResumeFileId(nextSession, nextWorkspaceState, fallbackActiveFileId),
         );
@@ -484,7 +506,7 @@ function App() {
           setError(caught instanceof Error ? caught.message : String(caught));
         }
       });
-  }, [loadDiagramForSession]);
+  }, [loadDiagramForSession, replaceWorkspaceState]);
 
   const tryLoadActiveSession = useCallback(
     async (path: string) => {
@@ -795,151 +817,48 @@ function App() {
     [baseRef, headRef, startSession],
   );
 
-  const changeTargetKind = useCallback(
-    (kind: ReviewTargetKind) => {
-      setTargetKind(kind);
-
-      try {
-        if (kind === "workingTree") {
-          startTargetSession({ kind: "workingTree" }, { baseRef: "", headRef: "" });
-          return;
-        }
-        if (kind === "commit") {
-          startTargetSession({ kind: "commit", commit: commitRef.trim() || "HEAD" });
-          return;
-        }
-        if (kind === "branch" && baseRef.trim() && headRef.trim()) {
-          startTargetSession({
-            kind: "branch",
-            baseRef: baseRef.trim(),
-            headRef: headRef.trim(),
-          });
-          return;
-        }
-        if (kind === "commitRange" && rangeFromRef.trim() && rangeToRef.trim()) {
-          startTargetSession({
-            kind: "commitRange",
-            fromRef: rangeFromRef.trim(),
-            toRef: rangeToRef.trim(),
-          });
-          return;
-        }
-        if (kind === "pullRequest") {
-          const target = buildReviewTargetRequest({
-            kind,
-            baseRef,
-            headRef,
-            commitRef,
-            rangeFromRef,
-            rangeToRef,
-            pullRequestNumber,
-            pullRequestInput,
-            selectedPullRequest,
-          });
-          startTargetSession(target);
-        }
-      } catch {
-        // Some modes need a second dropdown/input before a valid target exists.
-      }
-    },
-    [
-      baseRef,
-      commitRef,
-      headRef,
-      pullRequestInput,
-      pullRequestNumber,
-      rangeFromRef,
-      rangeToRef,
-      selectedPullRequest,
-      startTargetSession,
-    ],
-  );
-
-  const changeBaseRef = useCallback(
-    (value: string) => {
-      setBaseRef(value);
-      setTargetKind("branch");
-      if (value.trim() && headRef.trim()) {
-        startTargetSession(
-          { kind: "branch", baseRef: value.trim(), headRef: headRef.trim() },
-          { baseRef: value, headRef },
-        );
-      }
-    },
-    [headRef, startTargetSession],
-  );
-
-  const changeHeadRef = useCallback(
-    (value: string) => {
-      setHeadRef(value);
-      setTargetKind("branch");
-      if (baseRef.trim() && value.trim()) {
-        startTargetSession(
-          { kind: "branch", baseRef: baseRef.trim(), headRef: value.trim() },
-          { baseRef, headRef: value },
-        );
-      }
-    },
-    [baseRef, startTargetSession],
-  );
-
-  const changeCommitRef = useCallback(
-    (value: string) => {
-      const commit = value.trim() || "HEAD";
-      setCommitRef(commit);
+  const pickCommitAndOpen = useCallback(
+    (sha: string) => {
+      const clean = sha.trim();
+      if (!clean) return;
+      setCommitRef(clean);
       setTargetKind("commit");
-      startTargetSession({ kind: "commit", commit });
+      startTargetSession({ kind: "commit", commit: clean });
     },
     [startTargetSession],
   );
 
-  const changeRangeFromRef = useCallback(
-    (value: string) => {
-      setRangeFromRef(value);
-      setTargetKind("commitRange");
-      if (value.trim() && rangeToRef.trim()) {
-        startTargetSession({
-          kind: "commitRange",
-          fromRef: value.trim(),
-          toRef: rangeToRef.trim(),
-        });
-      }
-    },
-    [rangeToRef, startTargetSession],
-  );
-
-  const changeRangeToRef = useCallback(
-    (value: string) => {
-      setRangeToRef(value);
-      setTargetKind("commitRange");
-      if (rangeFromRef.trim() && value.trim()) {
-        startTargetSession({
-          kind: "commitRange",
-          fromRef: rangeFromRef.trim(),
-          toRef: value.trim(),
-        });
-      }
-    },
-    [rangeFromRef, startTargetSession],
-  );
-
-  const changePullRequestInput = useCallback((value: string) => {
-    setPullRequestInput(value);
-  }, []);
-
-  const submitPullRequestInput = useCallback(() => {
-    const cleanInput = pullRequestInput.trim();
-    if (!cleanInput) {
-      return;
+  const submitTargetFromPopover = useCallback(() => {
+    if (!repoPath) return;
+    try {
+      const target = buildReviewTargetRequest({
+        kind: targetKind,
+        baseRef,
+        headRef,
+        commitRef,
+        rangeFromRef,
+        rangeToRef,
+        pullRequestNumber,
+        pullRequestInput,
+        selectedPullRequest,
+      });
+      startTargetSession(target);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
     }
-    setTargetKind("pullRequest");
-    setPullRequestNumber(null);
-    startTargetSession({
-      kind: "pullRequest",
-      number: parsePullRequestNumber(cleanInput),
-      url: cleanInput.startsWith("http") ? cleanInput : null,
-    });
-  }, [pullRequestInput, startTargetSession]);
+  }, [
+    baseRef,
+    commitRef,
+    headRef,
+    pullRequestInput,
+    pullRequestNumber,
+    rangeFromRef,
+    rangeToRef,
+    repoPath,
+    selectedPullRequest,
+    startTargetSession,
+    targetKind,
+  ]);
 
   const resumeReview = useCallback(
     (item: ReviewHistoryItem) => {
@@ -1006,7 +925,7 @@ function App() {
   const selectFile = useCallback((fileId: string) => {
     const file = sessionRef.current?.files.find((item) => item.id === fileId);
     setActiveFileId(fileId);
-    setWorkspaceState((current) => {
+    updateWorkspaceState((current) => {
       const currentStatus = current[fileId]?.status ?? "unseen";
       if (currentStatus !== "unseen") {
         return current;
@@ -1022,7 +941,7 @@ function App() {
         },
       };
     });
-  }, []);
+  }, [updateWorkspaceState]);
 
   const markActiveViewed = useCallback(() => {
     if (!activeFile) {
@@ -1126,7 +1045,7 @@ function App() {
       return;
     }
 
-    setWorkspaceState((current) => {
+    updateWorkspaceState((current) => {
       const fileState = current[activeFile.id] ?? createDefaultFileState();
       if (fileState.status !== "unseen") {
         return current;
@@ -1141,7 +1060,7 @@ function App() {
         },
       };
     });
-  }, [activeFile, session, workspaceStateReadySessionId]);
+  }, [activeFile, session, updateWorkspaceState, workspaceStateReadySessionId]);
 
   useEffect(() => {
     if (session && workspaceStateReadySessionId === session.id) {
@@ -1153,6 +1072,21 @@ function App() {
       return () => window.clearTimeout(timer);
     }
   }, [session, workspaceState, workspaceStateReadySessionId]);
+
+  // Flush any pending workspace-state writes when switching away from a session,
+  // so a note added <350ms before the switch is not lost to the debounce cancel.
+  useEffect(() => {
+    if (!session) return;
+    const currentSession = session;
+    return () => {
+      if (workspaceStateReadySessionIdRef.current === currentSession.id) {
+        void saveWorkspaceState(
+          currentSession,
+          latestWorkspaceStateRef.current,
+        ).catch(() => {});
+      }
+    };
+  }, [session]);
 
   useEffect(() => {
     function flushWorkspaceState() {
@@ -1236,15 +1170,18 @@ function App() {
             clearRecentRepos();
             setRecentRepos([]);
           }}
-          onTargetKindChange={changeTargetKind}
-          onBaseRefChange={changeBaseRef}
-          onHeadRefChange={changeHeadRef}
-          onCommitRefChange={changeCommitRef}
-          onRangeFromRefChange={changeRangeFromRef}
-          onRangeToRefChange={changeRangeToRef}
-          onPullRequestInputChange={changePullRequestInput}
-          onPullRequestInputSubmit={submitPullRequestInput}
-          onPickPullRequest={(pr) =>
+          onTargetKindChange={setTargetKind}
+          onBaseRefChange={setBaseRef}
+          onHeadRefChange={setHeadRef}
+          onCommitRefChange={setCommitRef}
+          onRangeFromRefChange={setRangeFromRef}
+          onRangeToRefChange={setRangeToRef}
+          onPullRequestInputChange={setPullRequestInput}
+          onPullRequestInputSubmit={submitTargetFromPopover}
+          onPickPullRequest={(pr) => {
+            setTargetKind("pullRequest");
+            setPullRequestInput("");
+            setPullRequestNumber(pr.number);
             void startSession({
               target: {
                 kind: "pullRequest",
@@ -1253,9 +1190,11 @@ function App() {
                 baseRef: pr.baseRefName,
                 headRef: null,
               },
-            })
-          }
-          onCreateSession={createSession}
+            });
+          }}
+          onPickCommit={pickCommitAndOpen}
+          onCreateSession={submitTargetFromPopover}
+          onRefreshSession={createSession}
           onImportAgentSession={importAgentSession}
           onOpenPublish={() => setPublishOpen(true)}
           onSelectReviewHistory={resumeReview}
@@ -1379,11 +1318,21 @@ function App() {
                 session={session}
                 file={activeFile}
                 fileState={activeFileState}
+                workspaceState={workspaceState}
                 jumpTarget={jumpTarget}
                 onScrollHandled={handleScrollHandled}
-                onPatchFileState={patchFileState}
                 onMarkViewed={markActiveViewed}
                 onMarkReviewed={markActiveReviewed}
+                onSelectFile={setActiveFileId}
+                onJumpToInline={(fileId, diffPosition) => {
+                  setActiveFileId(fileId);
+                  setJumpTarget({
+                    fileId,
+                    diffPosition,
+                    requestedAt: Date.now(),
+                  });
+                }}
+                onDeleteInline={deleteInlineComment}
                 prContext={visiblePrContext}
                 onJumpToThread={(target) => {
                   const file = session.files.find(

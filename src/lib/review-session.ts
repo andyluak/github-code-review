@@ -571,7 +571,7 @@ export function reconcileWorkspaceState(
   return next;
 }
 
-function mergeWorkspaceStates(
+export function mergeWorkspaceStates(
   current: ReviewWorkspaceState,
   recovered: ReviewWorkspaceState,
 ): ReviewWorkspaceState {

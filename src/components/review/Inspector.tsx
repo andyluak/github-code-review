@@ -1,12 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useId,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { useEffect, useId, useMemo, useRef } from "react";
 import { NotebookPen } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -16,8 +8,10 @@ import type {
   ReviewThread,
 } from "@/types/github";
 import type {
+  InlineComment,
   ReviewFile,
   ReviewSession,
+  ReviewWorkspaceState,
   SessionFileState,
 } from "@/types/review";
 
@@ -25,6 +19,7 @@ type InspectorProps = {
   session: ReviewSession;
   file: ReviewFile | null;
   fileState: SessionFileState | null;
+  workspaceState: ReviewWorkspaceState;
   jumpTarget: {
     fileId: string;
     diffPosition?: number;
@@ -32,9 +27,11 @@ type InspectorProps = {
     requestedAt: number;
   } | null;
   onScrollHandled: () => void;
-  onPatchFileState: (fileId: string, patch: Partial<SessionFileState>) => void;
   onMarkViewed: () => void;
   onMarkReviewed: () => void;
+  onSelectFile?: (fileId: string) => void;
+  onJumpToInline?: (fileId: string, diffPosition: number) => void;
+  onDeleteInline?: (fileId: string, commentId: string) => void;
   prContext?: PullRequestContext | null;
   onJumpToThread?: (target: { path: string; line: number }) => void;
   onOpenAllThreads?: () => void;
@@ -45,9 +42,12 @@ export function Inspector(props: InspectorProps) {
     session,
     file,
     fileState,
-    onPatchFileState,
+    workspaceState,
     onMarkViewed,
     onMarkReviewed,
+    onSelectFile,
+    onJumpToInline,
+    onDeleteInline,
     jumpTarget,
     onScrollHandled,
     prContext,
@@ -94,12 +94,16 @@ export function Inspector(props: InspectorProps) {
                 />
               ) : null}
               <AgentContextSection file={file} session={session} />
-              <PrivateNoteSection
-                file={file}
-                fileState={fileState}
-                onPatch={onPatchFileState}
+              <PrivateNotesPanel
+                session={session}
+                workspaceState={workspaceState}
+                currentFile={file}
+                currentFileState={fileState}
                 onMarkViewed={onMarkViewed}
                 onMarkReviewed={onMarkReviewed}
+                onSelectFile={onSelectFile}
+                onJumpToInline={onJumpToInline}
+                onDeleteInline={onDeleteInline}
               />
               <SessionWarnings session={session} />
             </>
@@ -140,14 +144,6 @@ function SectionHeader({
         {trailing}
       </div>
     </div>
-  );
-}
-
-function SectionHelper({ children }: { children: React.ReactNode }) {
-  return (
-    <p className="mb-2 text-[11px] leading-snug text-[var(--rd-graphite)]">
-      {children}
-    </p>
   );
 }
 
@@ -270,131 +266,250 @@ function AgentContextSection({
   );
 }
 
-function PrivateNoteSection({
-  file,
-  fileState,
-  onPatch,
+function privateInlineComments(state: SessionFileState | null | undefined): InlineComment[] {
+  return (state?.inlineComments ?? []).filter((c) => c.visibility === "private");
+}
+
+function fileHasAnyPrivate(state: SessionFileState | null | undefined): boolean {
+  return privateInlineComments(state).length > 0;
+}
+
+function PrivateNotesPanel({
+  session,
+  workspaceState,
+  currentFile,
+  currentFileState,
   onMarkViewed,
   onMarkReviewed,
+  onSelectFile,
+  onJumpToInline,
+  onDeleteInline,
 }: {
-  file: ReviewFile;
-  fileState: SessionFileState | null;
-  onPatch: (fileId: string, patch: Partial<SessionFileState>) => void;
+  session: ReviewSession;
+  workspaceState: ReviewWorkspaceState;
+  currentFile: ReviewFile;
+  currentFileState: SessionFileState | null;
   onMarkViewed: () => void;
   onMarkReviewed: () => void;
+  onSelectFile?: (fileId: string) => void;
+  onJumpToInline?: (fileId: string, diffPosition: number) => void;
+  onDeleteInline?: (fileId: string, commentId: string) => void;
 }) {
   const headingId = useId();
-  const status = fileState?.status ?? "unseen";
+  const currentRef = useRef<HTMLDivElement | null>(null);
+
+  const otherFiles = useMemo(() => {
+    const result: ReviewFile[] = [];
+    for (const file of session.files) {
+      if (file.id === currentFile.id) continue;
+      if (fileHasAnyPrivate(workspaceState[file.id])) result.push(file);
+    }
+    return result;
+  }, [session.files, workspaceState, currentFile.id]);
+
+  useEffect(() => {
+    currentRef.current?.scrollIntoView({ block: "nearest", behavior: "auto" });
+  }, [currentFile.id]);
+
+  const currentHasAny = fileHasAnyPrivate(currentFileState);
+  const totalCount = otherFiles.length + (currentHasAny ? 1 : 0);
+
   return (
-    <section aria-labelledby={headingId} data-section="notes" className="flex flex-col gap-3 px-4 py-4">
-      <SectionHeader
-        label="Private note · this file"
-        headingId={headingId}
-        trailing={
-          <span className="font-mono text-[10px] text-[var(--rd-pencil)]">never published</span>
-        }
-      />
-      <SectionHelper>
-        <NotebookPen aria-hidden className="mr-1 -mt-0.5 inline-block size-3 text-[var(--rd-graphite)]" />
-        Keep notes for yourself while you read. Stays local.
-      </SectionHelper>
-      <BufferedAutoGrowTextarea
-        key={`${file.id}-private`}
-        value={fileState?.privateNote ?? ""}
-        onCommit={(next) => onPatch(file.id, { privateNote: next })}
-        ariaLabel="Private notes"
-        placeholder="Start typing…"
-      />
-      <div className="flex items-center justify-between gap-2">
-        <button
-          type="button"
-          onClick={onMarkViewed}
-          className={[
-            "rounded px-3 py-1 font-mono text-[11px]",
-            status === "viewed" || status === "reviewed"
-              ? "bg-[var(--rd-ink-3)] text-[var(--rd-cream-2)]"
-              : "bg-[var(--rd-ink-2)] text-[var(--rd-cream-2)] hover:text-[var(--rd-cream)]",
-          ].join(" ")}
-        >
-          Mark viewed
-        </button>
-        <Button
-          type="button"
-          size="xs"
-          onClick={onMarkReviewed}
-          className={
-            status === "reviewed"
-              ? "bg-[var(--rd-vermillion)] text-white hover:bg-[var(--rd-vermillion)]"
-              : ""
-          }
-        >
-          {status === "reviewed" ? "Reviewed ✓" : "Mark reviewed"}
-        </Button>
+    <section aria-labelledby={headingId} data-section="notes" className="flex flex-col">
+      <div className="flex items-baseline justify-between gap-2 px-4 pt-4 pb-2">
+        <h2 id={headingId} className="rd-display-italic text-[14px] leading-none text-[var(--rd-cream)]">
+          Private notes
+        </h2>
+        <span className="font-mono text-[10px] text-[var(--rd-pencil)]">
+          {totalCount === 0 ? "never published" : `${totalCount} ${totalCount === 1 ? "file" : "files"} · never published`}
+        </span>
       </div>
+      <p className="mb-3 px-4 text-[11px] leading-snug text-[var(--rd-graphite)]">
+        <NotebookPen aria-hidden className="mr-1 -mt-0.5 inline-block size-3 text-[var(--rd-graphite)]" />
+        Private inline notes you've left while reading. Stays local to your machine.
+      </p>
+
+      <div ref={currentRef}>
+        <FileNoteCard
+          file={currentFile}
+          fileState={currentFileState}
+          isCurrent
+          onMarkViewed={onMarkViewed}
+          onMarkReviewed={onMarkReviewed}
+          onJumpToInline={onJumpToInline}
+          onDeleteInline={onDeleteInline}
+        />
+      </div>
+
+      {otherFiles.length > 0 ? (
+        <>
+          <div className="mt-2 border-t border-[var(--rd-hair)] px-4 pt-3 pb-1 font-mono text-[9.5px] uppercase tracking-[0.14em] text-[var(--rd-pencil)]">
+            Notes on other files · {otherFiles.length}
+          </div>
+          <ul>
+            {otherFiles.map((file) => (
+              <li key={file.id}>
+                <FileNoteCard
+                  file={file}
+                  fileState={workspaceState[file.id] ?? null}
+                  isCurrent={false}
+                  onSelect={onSelectFile ? () => onSelectFile(file.id) : undefined}
+                  onJumpToInline={onJumpToInline}
+                  onDeleteInline={onDeleteInline}
+                />
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : null}
     </section>
   );
 }
 
-function BufferedAutoGrowTextarea({
-  value,
-  onCommit,
-  ariaLabel,
-  placeholder,
+function FileNoteCard({
+  file,
+  fileState,
+  isCurrent,
+  onMarkViewed,
+  onMarkReviewed,
+  onSelect,
+  onJumpToInline,
+  onDeleteInline,
 }: {
-  value: string;
-  onCommit: (value: string) => void;
-  ariaLabel: string;
-  placeholder: string;
+  file: ReviewFile;
+  fileState: SessionFileState | null;
+  isCurrent: boolean;
+  onMarkViewed?: () => void;
+  onMarkReviewed?: () => void;
+  onSelect?: () => void;
+  onJumpToInline?: (fileId: string, diffPosition: number) => void;
+  onDeleteInline?: (fileId: string, commentId: string) => void;
 }) {
-  const [draft, setDraft] = useState(value);
-  const ref = useRef<HTMLTextAreaElement | null>(null);
-  const valueRef = useRef(draft);
-  const committedRef = useRef(value);
-  const onCommitRef = useRef(onCommit);
-
-  useEffect(() => {
-    onCommitRef.current = onCommit;
-  }, [onCommit]);
-
-  useEffect(() => {
-    setDraft(value);
-    valueRef.current = value;
-    committedRef.current = value;
-  }, [value]);
-
-  const commit = useCallback(() => {
-    const next = valueRef.current;
-    if (next === committedRef.current) return;
-    committedRef.current = next;
-    onCommitRef.current(next);
-  }, []);
-
-  useEffect(() => {
-    valueRef.current = draft;
-    const timer = window.setTimeout(commit, 250);
-    return () => window.clearTimeout(timer);
-  }, [commit, draft]);
-
-  useEffect(() => () => commit(), [commit]);
-
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${el.scrollHeight}px`;
-  }, [draft]);
-
+  const status = fileState?.status ?? "unseen";
+  const inlineNotes = privateInlineComments(fileState);
   return (
-    <textarea
-      ref={ref}
-      value={draft}
-      onChange={(event) => setDraft(event.currentTarget.value)}
-      onBlur={commit}
-      aria-label={ariaLabel}
-      placeholder={placeholder}
-      rows={3}
-      className="block w-full min-h-[80px] max-h-[320px] resize-none overflow-auto rounded-md border-0 bg-[var(--rd-ink-2)] px-3 py-2 text-[13px] leading-5 text-[var(--rd-cream)] outline-none placeholder:text-[var(--rd-graphite)] focus-visible:outline-2 focus-visible:outline-[var(--rd-vermillion-line)] focus-visible:outline-offset-[-2px]"
-    />
+    <article
+      className={[
+        "flex flex-col gap-2 px-4 py-3",
+        isCurrent
+          ? "border-l-[3px] border-[var(--rd-vermillion)] bg-[var(--rd-ink-2)]"
+          : "border-l-[3px] border-transparent",
+      ].join(" ")}
+    >
+      <header className="flex items-baseline justify-between gap-2">
+        {onSelect ? (
+          <button
+            type="button"
+            onClick={onSelect}
+            className="min-w-0 truncate text-left font-mono text-[11px] text-[var(--rd-cream)] hover:text-[var(--rd-vermillion-2)]"
+            title={file.path}
+          >
+            {compactPath(file.path, 38)}
+          </button>
+        ) : (
+          <span className="min-w-0 truncate font-mono text-[11px] text-[var(--rd-cream)]" title={file.path}>
+            {compactPath(file.path, 38)}
+          </span>
+        )}
+        {isCurrent ? (
+          <span className="shrink-0 rounded-full bg-[var(--rd-vermillion-bg)] px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-[0.14em] text-[var(--rd-vermillion-2)]">
+            current
+          </span>
+        ) : null}
+      </header>
+
+      {inlineNotes.length > 0 ? (
+        <ul className="space-y-1">
+          {inlineNotes.map((comment) => (
+            <li key={comment.id}>
+              <InlinePrivateRow
+                comment={comment}
+                onJump={onJumpToInline ? () => onJumpToInline(file.id, comment.endDiffPosition) : undefined}
+                onDelete={onDeleteInline ? () => onDeleteInline(file.id, comment.id) : undefined}
+              />
+            </li>
+          ))}
+        </ul>
+      ) : isCurrent ? (
+        <div className="rounded-sm bg-[var(--rd-ink-3)] px-2 py-2 rd-display-italic text-[11px] text-[var(--rd-pencil)]">
+          No private notes on this file yet. Click a line in the diff to add one.
+        </div>
+      ) : null}
+
+      {isCurrent && onMarkViewed && onMarkReviewed ? (
+        <div className="flex items-center justify-between gap-2 pt-1">
+          <button
+            type="button"
+            onClick={onMarkViewed}
+            className={[
+              "rounded px-3 py-1 font-mono text-[11px]",
+              status === "viewed" || status === "reviewed"
+                ? "bg-[var(--rd-ink-3)] text-[var(--rd-cream-2)]"
+                : "bg-[var(--rd-ink-2)] text-[var(--rd-cream-2)] hover:text-[var(--rd-cream)]",
+            ].join(" ")}
+          >
+            Mark viewed
+          </button>
+          <Button
+            type="button"
+            size="xs"
+            onClick={onMarkReviewed}
+            className={
+              status === "reviewed"
+                ? "bg-[var(--rd-vermillion)] text-white hover:bg-[var(--rd-vermillion)]"
+                : ""
+            }
+          >
+            {status === "reviewed" ? "Reviewed ✓" : "Mark reviewed"}
+          </Button>
+        </div>
+      ) : null}
+    </article>
+  );
+}
+
+function InlinePrivateRow({
+  comment,
+  onJump,
+  onDelete,
+}: {
+  comment: InlineComment;
+  onJump?: () => void;
+  onDelete?: () => void;
+}) {
+  const lineLabel =
+    comment.endLine !== null && comment.endLine !== undefined
+      ? `L${comment.endLine}`
+      : `pos ${comment.endDiffPosition}`;
+  return (
+    <div className="group grid grid-cols-[auto_1fr_auto] items-start gap-2 rounded-sm bg-[var(--rd-ink-3)] px-2 py-1.5 text-[11px]">
+      <span className="shrink-0 rounded bg-[var(--rd-ink-2)] px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-[0.1em] text-[var(--rd-pencil)]">
+        {lineLabel}
+      </span>
+      {onJump ? (
+        <button
+          type="button"
+          onClick={onJump}
+          className="min-w-0 text-left text-[var(--rd-cream-2)] hover:text-[var(--rd-cream)]"
+        >
+          <span className="line-clamp-2 leading-snug">{comment.body || "(empty)"}</span>
+        </button>
+      ) : (
+        <span className="min-w-0 line-clamp-2 leading-snug text-[var(--rd-cream-2)]">
+          {comment.body || "(empty)"}
+        </span>
+      )}
+      {onDelete ? (
+        <button
+          type="button"
+          onClick={onDelete}
+          className="opacity-0 group-hover:opacity-100 rounded bg-[var(--rd-ink-2)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--rd-graphite)] hover:text-[var(--rd-del)]"
+          title="Delete inline note"
+        >
+          ✕
+        </button>
+      ) : null}
+    </div>
   );
 }
 
