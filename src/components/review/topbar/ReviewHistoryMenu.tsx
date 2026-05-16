@@ -1,5 +1,5 @@
 import { ChevronDown, History, Trash2 } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { SlabButton } from "@/components/ui/slab-button";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -24,17 +24,16 @@ export function ReviewHistoryMenu({
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          className="hidden h-7 rounded-md px-2 text-[11px] text-[var(--rd-graphite)] hover:bg-[var(--rd-ink-3)] hover:text-[var(--rd-cream)] lg:inline-flex"
+        <SlabButton
+          size="compact"
           disabled={history.length === 0}
+          className="hidden lg:inline-flex"
+          aria-label="Review history"
         >
           <History className="size-3.5" />
-          History
+          history
           <ChevronDown className="size-3" />
-        </Button>
+        </SlabButton>
       </DropdownMenuTrigger>
       <DropdownMenuContent
         align="end"

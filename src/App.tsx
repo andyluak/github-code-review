@@ -8,15 +8,17 @@ import {
   useState,
 } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { AlertCircle, FileDiff, Map as MapIcon } from "lucide-react";
+import { AlertCircle } from "lucide-react";
 import { DiffCanvas } from "@/components/review/DiffCanvas";
 import { EmptyState } from "@/components/review/EmptyState";
+import { HandoffSheet } from "@/components/review/HandoffSheet";
 import { Inspector } from "@/components/review/Inspector";
 import { PublishMergeSheet } from "@/components/review/PublishMergeSheet";
 import { ReviewRail } from "@/components/review/ReviewRail";
 import { SessionSwitcher } from "@/components/review/SessionSwitcher";
 import { TopBar } from "@/components/review/topbar/TopBar";
-import { Button } from "@/components/ui/button";
+import { SlabButton } from "@/components/ui/slab-button";
+import { SlabToggleGroup } from "@/components/ui/slab-toggle-group";
 import { useKeybinding } from "@/hooks/use-keybinding";
 import { usePrContext } from "@/hooks/use-pr-context";
 import { usePrInbox } from "@/hooks/use-pr-inbox";
@@ -135,6 +137,7 @@ function App() {
   const [jumpTarget, setJumpTarget] = useState<JumpTarget | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [publishOpen, setPublishOpen] = useState(false);
+  const [handoffOpen, setHandoffOpen] = useState(false);
   const [expandedThreadId, setExpandedThreadId] = useState<string | null>(null);
   const inbox = usePrInbox(repoPath || null);
   const activePrNumber =
@@ -1196,6 +1199,7 @@ function App() {
           onCreateSession={submitTargetFromPopover}
           onRefreshSession={createSession}
           onImportAgentSession={importAgentSession}
+          onOpenHandoff={() => setHandoffOpen(true)}
           onOpenPublish={() => setPublishOpen(true)}
           onSelectReviewHistory={resumeReview}
           onDeleteReviewHistory={deleteHistoryItem}
@@ -1430,6 +1434,14 @@ function App() {
             }}
           />
         ) : null}
+        <HandoffSheet
+          open={handoffOpen}
+          session={session}
+          workspaceState={workspaceState}
+          prContext={prContext.context}
+          activeFile={activeFile}
+          onClose={() => setHandoffOpen(false)}
+        />
       </main>
     </TooltipProvider>
   );
@@ -1460,36 +1472,26 @@ function CenterModeToggle({
 }) {
   return (
     <div className="flex h-9 shrink-0 items-center justify-center border-b border-[var(--rd-hair)] bg-[var(--rd-ink)]">
-      <div className="flex items-center gap-1 rounded-md bg-[var(--rd-ink-2)] p-0.5">
-        <Button
-          type="button"
-          variant="ghost"
-          size="xs"
+      <SlabToggleGroup aria-label="Center pane view mode">
+        <SlabButton
+          variant={mode === "diff" ? "active" : "default"}
+          size="sm"
           onClick={() => onChange("diff")}
-          className={
-            mode === "diff"
-              ? "h-6 rounded bg-[var(--rd-ink-4)] px-2 text-[11px] text-[var(--rd-cream)]"
-              : "h-6 rounded px-2 text-[11px] text-[var(--rd-graphite)] hover:text-[var(--rd-cream)]"
-          }
+          aria-pressed={mode === "diff"}
+          aria-label="Diff view"
         >
-          <FileDiff className="size-3" />
-          Diff
-        </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          size="xs"
+          diff
+        </SlabButton>
+        <SlabButton
+          variant={mode === "map" ? "active" : "default"}
+          size="sm"
           onClick={() => onChange("map")}
-          className={
-            mode === "map"
-              ? "h-6 rounded bg-[var(--rd-ink-4)] px-2 text-[11px] text-[var(--rd-cream)]"
-              : "h-6 rounded px-2 text-[11px] text-[var(--rd-graphite)] hover:text-[var(--rd-cream)]"
-          }
+          aria-pressed={mode === "map"}
+          aria-label="Review map view"
         >
-          <MapIcon className="size-3" />
-          Map
-        </Button>
-      </div>
+          map
+        </SlabButton>
+      </SlabToggleGroup>
     </div>
   );
 }

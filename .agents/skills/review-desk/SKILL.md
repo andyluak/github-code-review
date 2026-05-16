@@ -86,6 +86,11 @@ review-desk notes add --repo . --path src/file.ts --line 42 --body "Check this"
 review-desk notes private --repo . --path src/file.ts --body "Scratch note"
 review-desk notes draft --repo . --path src/file.ts --body "Publishable review text"
 review-desk notes status --repo . --path src/file.ts --status reviewed
+review-desk handoff --repo .
+review-desk handoff --repo . --format json
+review-desk handoff --repo . --scope current-file --path src/file.ts
+review-desk handoff --repo . --scope notes
+review-desk handoff --repo . --scope pr-comments
 review-desk diagrams create --repo .
 review-desk diagrams create --repo . --scope neighbors
 review-desk diagrams get --repo .
@@ -93,6 +98,13 @@ review-desk diagrams update --repo . --stdin < review-map.mmd
 review-desk diagrams update --repo . --format json --stdin < overview.json
 review-desk diagrams export --repo . --output review-map.mmd
 ```
+
+Use `review-desk handoff` when a user wants to pass their Review Desk notes,
+drafts, queue, and PR comments to an agent. It reads the active app-data session
+and emits markdown by default; use `--format json` for structured automation.
+Supported scopes are `session`, `current-file`, `notes`, and `pr-comments`.
+Do not launch Codex, Claude, a terminal, or an MCP server unless the user asks
+for that separately.
 
 ## Workflow
 

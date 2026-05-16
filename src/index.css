@@ -3,6 +3,7 @@
 @import "shadcn/tailwind.css";
 @import "@fontsource-variable/inter";
 @import "@fontsource-variable/jetbrains-mono";
+@import "@fontsource-variable/bricolage-grotesque";
 @import "@fontsource/instrument-serif/400.css";
 @import "@fontsource/instrument-serif/400-italic.css";
 
@@ -12,6 +13,7 @@
     --font-display: 'Instrument Serif', ui-serif, Georgia, serif;
     --font-sans: 'Inter Variable', ui-sans-serif, system-ui, sans-serif;
     --font-mono: 'JetBrains Mono Variable', ui-monospace, SFMono-Regular, Menlo, monospace;
+    --font-voice: 'Bricolage Grotesque Variable', 'Bricolage Grotesque', ui-sans-serif, system-ui, sans-serif;
     --font-heading: var(--font-sans);
     --color-sidebar-ring: var(--sidebar-ring);
     --color-sidebar-border: var(--sidebar-border);
@@ -361,6 +363,13 @@ textarea,
   font-family: var(--font-display);
   font-style: italic;
   font-weight: 400;
+}
+
+.rd-voice {
+  font-family: var(--font-voice);
+  font-style: normal;
+  font-weight: 400;
+  letter-spacing: -0.005em;
 }
 
 .rd-mono {

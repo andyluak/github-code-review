@@ -1,5 +1,5 @@
-import { Bot, RefreshCw } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Bot, RefreshCw, Share2 } from "lucide-react";
+import { SlabButton } from "@/components/ui/slab-button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { ReviewHistoryItem } from "@/types/review";
 import { ReviewHistoryMenu } from "@/components/review/topbar/ReviewHistoryMenu";
@@ -8,10 +8,12 @@ type Props = {
   repoPath: string;
   fontZoom: number;
   isLoading: boolean;
+  canOpenHandoff: boolean;
   publishLabelCount: number;
   reviewHistory: ReviewHistoryItem[];
   onRefresh: () => void;
   onImportAgentSession: () => void;
+  onOpenHandoff: () => void;
   onResetFontZoom: () => void;
   onOpenPublish: () => void;
   onSelectReviewHistory: (item: ReviewHistoryItem) => void;
@@ -21,19 +23,17 @@ type Props = {
 
 export function TopBarActions(props: Props) {
   return (
-    <div className="flex shrink-0 items-center gap-1.5">
+    <div className="flex shrink-0 items-stretch border border-[var(--rd-hair)] divide-x divide-[var(--rd-hair)]">
       <Tooltip>
         <TooltipTrigger asChild>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            className="size-8 rounded-md border border-[var(--rd-hair-2)] bg-[var(--rd-ink-2)] text-[var(--rd-cream-2)] hover:bg-[var(--rd-ink-3)] hover:text-[var(--rd-cream)]"
+          <SlabButton
+            size="icon"
             disabled={!props.repoPath || props.isLoading}
             onClick={props.onRefresh}
+            aria-label="Refresh session"
           >
             <RefreshCw className="size-4" />
-          </Button>
+          </SlabButton>
         </TooltipTrigger>
         <TooltipContent>Refresh session</TooltipContent>
       </Tooltip>
@@ -47,47 +47,57 @@ export function TopBarActions(props: Props) {
 
       <Tooltip>
         <TooltipTrigger asChild>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            className="size-8 rounded-md border border-[var(--rd-hair-2)] bg-[var(--rd-ink-2)] text-[var(--rd-cream-2)] hover:bg-[var(--rd-ink-3)] hover:text-[var(--rd-cream)]"
+          <SlabButton
+            size="icon"
             onClick={props.onImportAgentSession}
+            aria-label="Import an agent review manifest"
           >
             <Bot className="size-4" />
-          </Button>
+          </SlabButton>
         </TooltipTrigger>
         <TooltipContent>Import an agent review manifest</TooltipContent>
       </Tooltip>
 
       <Tooltip>
         <TooltipTrigger asChild>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            className="size-8 rounded-md border border-[var(--rd-hair-2)] bg-[var(--rd-ink-2)] font-mono text-[10px] text-[var(--rd-cream-2)] hover:bg-[var(--rd-ink-3)] hover:text-[var(--rd-cream)]"
+          <SlabButton
+            size="icon"
+            disabled={!props.canOpenHandoff}
+            onClick={props.onOpenHandoff}
+            aria-label="Agent handoff"
+          >
+            <Share2 className="size-4" />
+          </SlabButton>
+        </TooltipTrigger>
+        <TooltipContent>Agent handoff</TooltipContent>
+      </Tooltip>
+
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <SlabButton
+            size="compact"
             onClick={props.onResetFontZoom}
+            aria-label={`Font zoom ${Math.round(props.fontZoom * 100)}%`}
+            className="font-mono normal-case tracking-normal"
           >
             {Math.round(props.fontZoom * 100)}%
-          </Button>
+          </SlabButton>
         </TooltipTrigger>
         <TooltipContent>Cmd/Ctrl + plus, minus, or 0</TooltipContent>
       </Tooltip>
 
-      <Button
-        type="button"
-        size="sm"
-        className="h-8 rounded-md bg-[var(--rd-cream)] px-3 text-[12px] font-medium text-[var(--rd-ink)] hover:bg-white disabled:bg-[var(--rd-ink-3)] disabled:text-[var(--rd-pencil)]"
+      <SlabButton
+        size="compact"
+        variant="primary"
         onClick={props.onOpenPublish}
       >
-        Publish
+        publish
         {props.publishLabelCount > 0 ? (
-          <span className="ml-1.5 rounded bg-[var(--rd-ink)] px-1.5 py-0 text-[10px] text-[var(--rd-cream)]">
+          <span className="ml-1.5 px-1.5 py-0 font-mono text-[10px] text-[var(--rd-vermillion)] bg-[var(--rd-ink)]">
             {props.publishLabelCount}
           </span>
         ) : null}
-      </Button>
+      </SlabButton>
     </div>
   );
 }

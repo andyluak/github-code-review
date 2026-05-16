@@ -152,6 +152,23 @@ side of the diff. In pull request sessions, use `--visibility review` for
 publishable inline comments. Use `--side old` for removed lines and `--stdin`
 for multi-line text.
 
+Export an agent handoff from the active session:
+
+```bash
+review-desk handoff --repo .
+review-desk handoff --repo . --format json
+review-desk handoff --repo . --scope current-file --path src/file.ts
+review-desk handoff --repo . --scope notes
+review-desk handoff --repo . --scope pr-comments
+review-desk handoff --repo . --output /tmp/review-desk-handoff.md
+```
+
+The handoff command reads the active session manifest, workspace-state notes,
+and PR comments/threads when `gh` can resolve them. It emits reviewer-owned
+context for an agent without making the terminal, Codex, or Claude the source of
+truth. Supported scopes are `session`, `current-file`, `notes`, and
+`pr-comments`; supported formats are `markdown` and `json`.
+
 Create, read, edit, and export review maps:
 
 ```bash

@@ -1,7 +1,7 @@
 import { useEffect, useId, useMemo, useRef } from "react";
 import { NotebookPen } from "lucide-react";
-import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { SlabButton } from "@/components/ui/slab-button";
 import { compactPath } from "@/lib/format";
 import type {
   PullRequestContext,
@@ -437,31 +437,23 @@ function FileNoteCard({
       ) : null}
 
       {isCurrent && onMarkViewed && onMarkReviewed ? (
-        <div className="flex items-center justify-between gap-2 pt-1">
-          <button
-            type="button"
+        <div className="flex items-stretch justify-between gap-0 pt-1 border border-[var(--rd-hair)] divide-x divide-[var(--rd-hair)]">
+          <SlabButton
+            size="compact"
+            variant={status === "viewed" || status === "reviewed" ? "active" : "default"}
             onClick={onMarkViewed}
-            className={[
-              "rounded px-3 py-1 font-mono text-[11px]",
-              status === "viewed" || status === "reviewed"
-                ? "bg-[var(--rd-ink-3)] text-[var(--rd-cream-2)]"
-                : "bg-[var(--rd-ink-2)] text-[var(--rd-cream-2)] hover:text-[var(--rd-cream)]",
-            ].join(" ")}
+            aria-label={status === "viewed" || status === "reviewed" ? "Mark unviewed" : "Mark viewed"}
           >
-            Mark viewed
-          </button>
-          <Button
-            type="button"
-            size="xs"
+            mark viewed
+          </SlabButton>
+          <SlabButton
+            size="compact"
+            variant={status === "reviewed" ? "active" : "primary"}
             onClick={onMarkReviewed}
-            className={
-              status === "reviewed"
-                ? "bg-[var(--rd-vermillion)] text-white hover:bg-[var(--rd-vermillion)]"
-                : ""
-            }
+            aria-label={status === "reviewed" ? "Reviewed" : "Mark reviewed"}
           >
-            {status === "reviewed" ? "Reviewed ✓" : "Mark reviewed"}
-          </Button>
+            {status === "reviewed" ? "reviewed ✓" : "mark reviewed"}
+          </SlabButton>
         </div>
       ) : null}
     </article>

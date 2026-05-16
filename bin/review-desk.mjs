@@ -43,6 +43,9 @@ function main() {
       case "note":
         handleNotesCommand(rest);
         break;
+      case "handoff":
+        createHandoff(parseArgs(rest));
+        break;
       case "diagrams":
       case "diagram":
         handleDiagramsCommand(rest);
@@ -720,6 +723,522 @@ function setFileStatus(args) {
   }
 
   console.log(`marked ${file.path} ${status}`);
+}
+
+function createHandoff(args) {
+  const context = loadNotesContext(args);
+  const scope = normalizeHandoffScope(args.scope ?? "session");
+  const format = normalizeHandoffFormat(args.format ?? (args.json ? "json" : "markdown"));
+  const currentPath = clean(args.path ?? args.file);
+  const pr = loadPullRequestHandoffContext(context, args);
+  const bundle = buildHandoffBundle(context, scope, currentPath, pr);
+  const output = format === "json"
+    ? `${JSON.stringify(bundle, null, 2)}\n`
+    : renderHandoffMarkdown(bundle);
+  const outputPath = clean(args.output ?? args.out);
+
+  if (outputPath) {
+    writeFileTextAtomic(outputPath, output);
+    if (args.json) {
+      writeStdout({
+        repoRoot: context.repoRoot,
+        sessionId: context.sessionId,
+        outputPath: resolve(outputPath),
+        format,
+        scope,
+      });
+    } else {
+      console.log(`handoff exported: ${resolve(outputPath)}`);
+    }
+    return;
+  }
+
+  process.stdout.write(output);
+}
+
+function normalizeHandoffScope(value) {
+  switch (String(value).trim()) {
+    case "session":
+    case "all":
+      return "session";
+    case "current-file":
+    case "file":
+    case "current":
+      return "current-file";
+    case "notes":
+    case "review-notes":
+      return "notes";
+    case "pr-comments":
+    case "comments":
+    case "threads":
+      return "pr-comments";
+    default:
+      fail("Handoff scope must be session, current-file, notes, or pr-comments");
+  }
+}
+
+function normalizeHandoffFormat(value) {
+  switch (String(value).trim()) {
+    case "markdown":
+    case "md":
+      return "markdown";
+    case "json":
+      return "json";
+    default:
+      fail("Handoff format must be markdown or json");
+  }
+}
+
+function buildHandoffBundle(context, scope, currentPath, pr) {
+  const files = sessionFileEntries(context);
+  const requestedPath = currentPath
+    ? normalizeRepoRelativePath(context.repoRoot, currentPath)
+    : null;
+  if (scope === "current-file" && !requestedPath) {
+    fail("Handoff scope current-file requires --path");
+  }
+  const selectedFiles = selectHandoffFiles(context, files, scope, requestedPath);
+  const notes = selectedFiles
+    .map((file) => noteForHandoffFile(context, file, pr))
+    .filter((note) => scope !== "pr-comments" && hasHandoffNoteContent(note));
+  const summary = handoffSummary(context, files, pr);
+
+  return {
+    version: 1,
+    generatedAt: new Date().toISOString(),
+    scope,
+    repo: {
+      root: context.repoRoot,
+      branch: safeGitValue(context.repoRoot, ["branch", "--show-current"]),
+      headSha: safeGitValue(context.repoRoot, ["rev-parse", "HEAD"]),
+    },
+    target: {
+      label: context.target.label,
+      kind: context.target.request.kind,
+      request: context.target.request,
+    },
+    session: {
+      id: context.sessionId,
+      manifestPath: context.manifestPath,
+      workspaceStatePath: context.workspaceStatePath,
+      title: context.manifest.title ?? null,
+      createdBy: context.manifest.createdBy ?? null,
+    },
+    summary,
+    currentFile: requestedPath
+      ? fileHandoffEntry(context, files.find((file) => sameRepoPath(file.path, requestedPath)) ?? { path: requestedPath })
+      : null,
+    reviewQueue: scope === "pr-comments"
+      ? []
+      : (scope === "session" ? files : selectedFiles).map((file) => fileHandoffEntry(context, file)),
+    notes,
+    pr: pr ? filterPrHandoffContext(pr, scope, requestedPath) : null,
+  };
+}
+
+function selectHandoffFiles(context, files, scope, requestedPath) {
+  if (scope === "current-file") {
+    return [files.find((file) => sameRepoPath(file.path, requestedPath)) ?? { path: requestedPath }];
+  }
+  if (scope === "notes") {
+    return files.filter((file) =>
+      hasHandoffNoteContent(noteForHandoffFile(context, file, null)),
+    );
+  }
+  return files;
+}
+
+function fileHandoffEntry(context, file) {
+  const path = normalizeRepoRelativePath(context.repoRoot, file.path);
+  const resolved = context.files.byPath.get(path) ?? { id: fileId(path), path };
+  const state = {
+    ...defaultFileState(),
+    ...context.workspaceState[resolved.id],
+  };
+  return {
+    fileId: resolved.id,
+    path,
+    status: state.status,
+    ordered: Boolean(file.ordered),
+    excluded: Boolean(file.excluded),
+    missing: Boolean(file.missing),
+    group: file.group ?? null,
+    reason: file.reason ?? null,
+  };
+}
+
+function noteForHandoffFile(context, file, pr) {
+  const path = normalizeRepoRelativePath(context.repoRoot, file.path);
+  const resolved = context.files.byPath.get(path) ?? { id: fileId(path), path };
+  const state = {
+    ...defaultFileState(),
+    ...context.workspaceState[resolved.id],
+  };
+  const threadById = new Map((pr?.threads ?? []).map((thread) => [thread.id, thread]));
+  return {
+    fileId: resolved.id,
+    path,
+    status: state.status,
+    privateNote: state.privateNote ?? "",
+    publishableDraft: state.publishableDraft ?? "",
+    inlineComments: state.inlineComments ?? [],
+    threadReplies: Object.entries(state.threadReplies ?? {})
+      .filter(([, body]) => String(body).trim())
+      .map(([threadId, body]) => {
+        const thread = threadById.get(threadId);
+        return {
+          threadId,
+          path: thread?.path ?? null,
+          line: thread?.line ?? thread?.originalLine ?? null,
+          body,
+        };
+      }),
+  };
+}
+
+function hasHandoffNoteContent(note) {
+  return (
+    note.status !== "unseen" ||
+    Boolean(note.privateNote?.trim()) ||
+    Boolean(note.publishableDraft?.trim()) ||
+    (note.inlineComments ?? []).length > 0 ||
+    (note.threadReplies ?? []).length > 0
+  );
+}
+
+function handoffSummary(context, files, pr) {
+  const diff = diffSummary(context.repoRoot, context.target);
+  const notes = files
+    .map((file) => noteForHandoffFile(context, file, pr))
+    .filter(hasHandoffNoteContent);
+  let privateInlineComments = 0;
+  let reviewInlineDrafts = 0;
+  let threadReplyDrafts = 0;
+  for (const note of notes) {
+    for (const comment of note.inlineComments ?? []) {
+      if (comment.visibility === "review") {
+        reviewInlineDrafts += 1;
+      } else {
+        privateInlineComments += 1;
+      }
+    }
+    threadReplyDrafts += note.threadReplies.length;
+  }
+
+  return {
+    includedFiles: files.filter((file) => !file.excluded && !file.missing).length,
+    excludedFiles: files.filter((file) => file.excluded).length,
+    additions: diff.additions,
+    deletions: diff.deletions,
+    notes: notes.length,
+    privateInlineComments,
+    reviewInlineDrafts,
+    threadReplyDrafts,
+    prThreads: pr?.threads.length ?? 0,
+    unresolvedPrThreads: pr?.threads.filter((thread) => !thread.isResolved).length ?? 0,
+    topLevelPrComments: pr?.topLevelComments.length ?? 0,
+    warnings: pr?.warning ? [pr.warning] : [],
+  };
+}
+
+function diffSummary(repoRoot, target) {
+  try {
+    const output = git(repoRoot, ["diff", "--numstat", "--find-renames", target.diffTarget ?? "HEAD", "--"]);
+    let additions = 0;
+    let deletions = 0;
+    for (const line of output.split("\n")) {
+      const [rawAdditions, rawDeletions] = line.trim().split(/\s+/);
+      additions += Number(rawAdditions) || 0;
+      deletions += Number(rawDeletions) || 0;
+    }
+    return { additions, deletions };
+  } catch {
+    return { additions: 0, deletions: 0 };
+  }
+}
+
+function renderHandoffMarkdown(bundle) {
+  const lines = [
+    "# Review Desk Handoff",
+    "",
+    `Generated: ${bundle.generatedAt}`,
+    `Scope: ${bundle.scope}`,
+    `Repo: ${bundle.repo.root}`,
+    `Branch: ${bundle.repo.branch || "(detached)"}`,
+    `Target: ${bundle.target.label}`,
+    `Head: ${bundle.repo.headSha.slice(0, 8)}`,
+    "",
+    "## Summary",
+    "",
+    `- Files: ${bundle.summary.includedFiles} included, ${bundle.summary.excludedFiles} excluded`,
+    `- Diff: +${bundle.summary.additions} / -${bundle.summary.deletions}`,
+    `- Notes: ${bundle.summary.notes}`,
+    `- Inline drafts: ${bundle.summary.reviewInlineDrafts} publishable, ${bundle.summary.privateInlineComments} private`,
+    `- PR threads: ${bundle.summary.unresolvedPrThreads} unresolved / ${bundle.summary.prThreads} total`,
+  ];
+
+  for (const warning of bundle.summary.warnings ?? []) {
+    lines.push(`- Warning: ${warning}`);
+  }
+
+  if (bundle.currentFile) {
+    lines.push("", "## Current File", "", handoffFileLine(bundle.currentFile));
+  }
+
+  if (bundle.reviewQueue.length > 0) {
+    lines.push("", "## Review Queue", "");
+    for (const [index, file] of bundle.reviewQueue.entries()) {
+      lines.push(`${index + 1}. ${handoffFileLine(file)}`);
+      if (file.reason) {
+        lines.push(`   - Reason: ${file.reason}`);
+      }
+    }
+  }
+
+  if (bundle.notes.length > 0) {
+    lines.push("", "## Reviewer Notes", "");
+    for (const note of bundle.notes) {
+      lines.push(`### ${note.path}`, `Status: ${note.status}`);
+      if (note.privateNote.trim()) {
+        lines.push("", "Private note:", quoteBlock(note.privateNote));
+      }
+      if (note.publishableDraft.trim()) {
+        lines.push("", "Publishable draft:", quoteBlock(note.publishableDraft));
+      }
+      for (const comment of note.inlineComments) {
+        lines.push(
+          "",
+          `- ${comment.visibility} inline ${handoffLineLabel(comment)} (${comment.side}): ${comment.body}`,
+        );
+      }
+      for (const reply of note.threadReplies) {
+        lines.push(
+          "",
+          `- Draft reply to ${reply.threadId}${reply.line ? ` at L${reply.line}` : ""}: ${reply.body}`,
+        );
+      }
+      lines.push("");
+    }
+  }
+
+  if (bundle.pr) {
+    lines.push("", "## Pull Request Context", "");
+    lines.push(
+      `#${bundle.pr.number} ${bundle.pr.title}`,
+      `State: ${bundle.pr.state}${bundle.pr.isDraft ? " draft" : ""}`,
+      `Author: ${bundle.pr.author}`,
+      `URL: ${bundle.pr.url}`,
+    );
+    if (bundle.pr.threads.length > 0) {
+      lines.push("", "### Review Threads", "");
+      for (const thread of bundle.pr.threads) {
+        lines.push(`- ${thread.path}${thread.line ? `:L${thread.line}` : ""} (${thread.isResolved ? "resolved" : "unresolved"})`);
+        for (const comment of thread.comments) {
+          lines.push(`  - ${comment.author}: ${oneLine(comment.body)}`);
+        }
+      }
+    }
+    if (bundle.pr.topLevelComments.length > 0) {
+      lines.push("", "### Top-Level PR Comments", "");
+      for (const comment of bundle.pr.topLevelComments) {
+        lines.push(`- ${comment.author}: ${oneLine(comment.body)}`);
+      }
+    }
+  }
+
+  lines.push(
+    "",
+    "## Agent Instruction",
+    "",
+    "Use this Review Desk context as reviewer-owned state. Preserve private notes as private, treat publishable drafts as candidate PR comments, and continue from the existing review queue instead of restarting the review.",
+  );
+
+  return `${lines.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd()}\n`;
+}
+
+function handoffFileLine(file) {
+  const flags = [
+    file.status,
+    file.ordered ? "ordered" : "unordered",
+    file.excluded ? "excluded" : null,
+    file.missing ? "missing" : null,
+    file.group,
+  ].filter(Boolean);
+  return `${file.path} (${flags.join(", ")})`;
+}
+
+function handoffLineLabel(comment) {
+  if (comment.startLine && comment.endLine && comment.startLine !== comment.endLine) {
+    return `L${comment.startLine}-L${comment.endLine}`;
+  }
+  return `L${comment.endLine ?? comment.startLine ?? comment.endDiffPosition}`;
+}
+
+function quoteBlock(value) {
+  return String(value)
+    .trim()
+    .split("\n")
+    .map((line) => `> ${line}`)
+    .join("\n");
+}
+
+const PR_HANDOFF_QUERY = `
+query($owner: String!, $repo: String!, $number: Int!) {
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $number) {
+      number title url state isDraft reviewDecision mergeStateStatus
+      author { login }
+      labels(first: 30) { nodes { name } }
+      reviewThreads(first: 100) {
+        nodes {
+          id isResolved isOutdated path line originalLine
+          comments(first: 50) {
+            nodes {
+              id body createdAt
+              author { login }
+            }
+          }
+        }
+      }
+      comments(first: 100) {
+        nodes {
+          id body createdAt
+          author { login }
+        }
+      }
+    }
+  }
+}
+`;
+
+function loadPullRequestHandoffContext(context, args) {
+  if (args["skip-pr-context"] || context.target.request.kind !== "pullRequest") {
+    return null;
+  }
+  const number = coerceNumber(context.target.request.number) ?? parsePrNumber(context.target.request.url ?? "");
+  if (!number) {
+    return null;
+  }
+  const repo = githubRepoForRemote(context.repoRoot, context.target.request.remote);
+  if (!repo) {
+    return {
+      warning: "Could not infer GitHub owner/repo from git remote.",
+      number,
+      title: "",
+      url: context.target.request.url ?? "",
+      state: "",
+      isDraft: false,
+      author: "",
+      labels: [],
+      threads: [],
+      topLevelComments: [],
+    };
+  }
+
+  try {
+    const body = command(context.repoRoot, "gh", [
+      "api",
+      "graphql",
+      "-f",
+      `query=${PR_HANDOFF_QUERY}`,
+      "-F",
+      `owner=${repo.owner}`,
+      "-F",
+      `repo=${repo.name}`,
+      "-F",
+      `number=${number}`,
+    ]);
+    const pr = JSON.parse(body)?.data?.repository?.pullRequest;
+    if (!pr) {
+      return null;
+    }
+    return {
+      number: pr.number,
+      title: pr.title,
+      url: pr.url,
+      state: pr.state,
+      isDraft: Boolean(pr.isDraft),
+      reviewDecision: pr.reviewDecision ?? null,
+      mergeStateStatus: pr.mergeStateStatus ?? null,
+      author: pr.author?.login ?? "",
+      labels: (pr.labels?.nodes ?? []).map((label) => label.name).filter(Boolean),
+      threads: (pr.reviewThreads?.nodes ?? []).map((thread) => ({
+        id: thread.id,
+        path: thread.path,
+        line: thread.line ?? thread.originalLine ?? null,
+        originalLine: thread.originalLine ?? null,
+        isResolved: Boolean(thread.isResolved),
+        isOutdated: Boolean(thread.isOutdated),
+        comments: (thread.comments?.nodes ?? []).map((comment) => ({
+          id: comment.id,
+          author: comment.author?.login ?? "unknown",
+          body: comment.body ?? "",
+          createdAt: comment.createdAt ?? "",
+        })),
+      })),
+      topLevelComments: (pr.comments?.nodes ?? []).map((comment) => ({
+        id: comment.id,
+        author: comment.author?.login ?? "unknown",
+        body: comment.body ?? "",
+        createdAt: comment.createdAt ?? "",
+      })),
+    };
+  } catch (error) {
+    return {
+      warning: `Could not load PR comments through gh: ${error instanceof Error ? error.message : String(error)}`,
+      number,
+      title: "",
+      url: context.target.request.url ?? "",
+      state: "",
+      isDraft: false,
+      author: "",
+      labels: [],
+      threads: [],
+      topLevelComments: [],
+    };
+  }
+}
+
+function filterPrHandoffContext(pr, scope, requestedPath) {
+  const threads = pr.threads
+    .filter((thread) => !requestedPath || sameRepoPath(thread.path, requestedPath))
+    .filter((thread) => scope !== "session" || !thread.isResolved);
+  return {
+    ...pr,
+    threads,
+    topLevelComments: requestedPath ? [] : pr.topLevelComments,
+  };
+}
+
+function githubRepoForRemote(repoRoot, remoteName) {
+  const remotes = listRemotes(repoRoot);
+  const remote =
+    remotes.find((candidate) => candidate.name === remoteName) ??
+    remotes.find((candidate) => candidate.name === "origin") ??
+    remotes[0];
+  if (!remote) {
+    return null;
+  }
+  return parseGithubRemote(remote.url);
+}
+
+function parseGithubRemote(url) {
+  const cleaned = String(url).trim().replace(/\.git$/, "");
+  const match =
+    cleaned.match(/github\.com[:/]([^/]+)\/([^/]+)$/) ??
+    cleaned.match(/[:/]([^/:]+)\/([^/]+)$/);
+  if (!match) {
+    return null;
+  }
+  return { owner: match[1], name: match[2] };
+}
+
+function safeGitValue(repoRoot, args) {
+  try {
+    return git(repoRoot, args).trim();
+  } catch {
+    return "";
+  }
 }
 
 function createDiagram(args) {
@@ -2860,6 +3379,7 @@ function parseArgs(rawArgs) {
       "force",
       "all",
       "append",
+      "skip-pr-context",
     ]);
     if (booleanKeys.has(rawKey)) {
       args[rawKey] = true;
@@ -3076,6 +3596,8 @@ Usage:
   review-desk notes private --repo . --path src/file.ts --body "Scratch note"
   review-desk notes draft --repo . --path src/file.ts --body "Publishable PR review text"
   review-desk notes status --repo . --path src/file.ts --status reviewed
+  review-desk handoff --repo . [--scope session|current-file|notes|pr-comments] [--format markdown|json]
+  review-desk handoff --repo . --scope current-file --path src/file.ts
   review-desk diagrams create --repo . [--scope session|neighbors|deep]
   review-desk diagrams create --repo . --target commit --commit 5315b7c
   review-desk diagrams list --repo . [--json]

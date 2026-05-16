@@ -7,29 +7,19 @@ import {
   useRef,
   useState,
   type MouseEvent,
-  type ReactNode,
 } from "react";
 import {
   Check,
-  CheckCircle2,
-  Columns2,
   Copy,
-  Eye,
-  ExternalLink,
   FileDiff,
-  MessageSquare,
-  NotebookPen,
-  Rows3,
-  Trash2,
-  X,
 } from "lucide-react";
-import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useDiffViewMode, type DiffViewMode } from "@/hooks/use-diff-view-mode";
 import { compactPath, pathParts } from "@/lib/format";
 import { highlightCodeLine } from "@/lib/syntax-highlight";
+import { SlabButton } from "@/components/ui/slab-button";
+import { SlabToggleGroup } from "@/components/ui/slab-toggle-group";
 import { MarkdownView } from "@/components/review/MarkdownView";
 import { ConversationBubble } from "@/components/review/ConversationBubble";
 import { ConversationThread } from "@/components/review/ConversationThread";
@@ -282,75 +272,92 @@ export const DiffCanvas = memo(function DiffCanvas({
 
   return (
     <section className="flex h-full min-h-0 flex-col bg-[var(--rd-ink)]">
-      <div className="flex h-12 shrink-0 items-center justify-between gap-3 border-b border-[var(--rd-hair)] bg-[var(--rd-ink)] px-4">
-        <div className="min-w-0">
-          <div className="flex items-baseline gap-2">
-            <h2 className="truncate font-mono text-[12px] font-medium text-[var(--rd-cream)]">
-              {displayPath.fileName}
-            </h2>
-            <span className="rd-display-italic text-[11px] text-[var(--rd-pencil)]">
-              {file.changeKind}
-            </span>
-          </div>
-          <div className="mt-0.5 flex items-center gap-3 font-mono text-[10px] text-[var(--rd-pencil)]">
-            {displayPath.directory ? (
-              <span className="min-w-0 truncate" title={file.path}>
+      {/* Identity block */}
+      <div className="shrink-0 px-6 pt-5 pb-4 bg-[var(--rd-ink)]">
+        <h2 className="truncate font-mono text-[17px] font-medium tracking-[-0.005em] text-[var(--rd-cream)]" title={file.path}>
+          {displayPath.fileName}
+        </h2>
+        <div className="mt-1.5 flex items-baseline gap-2.5 flex-wrap font-mono text-[11.5px] text-[var(--rd-pencil)]">
+          <span className="font-voice font-medium text-[12px] lowercase tracking-[0.01em] text-[var(--rd-vermillion-2)]">
+            {file.changeKind}
+          </span>
+          <span className="text-[var(--rd-hair-3)]" aria-hidden>·</span>
+          <span className="text-[var(--rd-add)]">+{file.additions}</span>
+          <span className="text-[var(--rd-del)]">−{file.deletions}</span>
+          {displayPath.directory ? (
+            <>
+              <span className="text-[var(--rd-hair-3)]" aria-hidden>·</span>
+              <span className="min-w-0 truncate">
                 {compactPath(displayPath.directory, 76)}
+                {displayPath.directory.endsWith("/") ? "" : "/"}
               </span>
-            ) : null}
-            <span className="text-[var(--rd-add)]">+{file.additions}</span>
-            <span className="text-[var(--rd-del)]">−{file.deletions}</span>
-            {file.oldPath ? <span>← {compactPath(file.oldPath, 56)}</span> : null}
-          </div>
+            </>
+          ) : null}
+          {file.oldPath ? (
+            <>
+              <span className="text-[var(--rd-hair-3)]" aria-hidden>·</span>
+              <span>← {compactPath(file.oldPath, 56)}</span>
+            </>
+          ) : null}
         </div>
+      </div>
 
-        <div className="flex items-center gap-1.5">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-sm"
-                className="size-7 text-[var(--rd-graphite)] hover:bg-[var(--rd-ink-3)] hover:text-[var(--rd-cream)]"
-                disabled={file.changeKind === "deleted"}
-                onClick={onOpenFile}
-                aria-label="Open file in editor"
-              >
-                <ExternalLink className="size-3.5" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>
-              {file.changeKind === "deleted"
-                ? "Deleted file has no working-tree path"
-                : "Open file in editor"}
-            </TooltipContent>
-          </Tooltip>
-          <ViewModeToggle mode={viewMode} disabled={isOneSided} onChange={setViewMode} />
-          <span className="h-4 w-px bg-[var(--rd-hair-2)]" aria-hidden />
-          <Button
-            type="button"
-            variant="ghost"
-            size="xs"
-            className="h-7 rounded-md px-2 text-[11px] text-[var(--rd-cream-2)] hover:bg-[var(--rd-ink-3)] hover:text-[var(--rd-cream)]"
-            onClick={onMarkViewed}
+      {/* Toolbar */}
+      <div className="flex shrink-0 items-stretch border-y border-[var(--rd-hair)] bg-black/15 pl-6 pr-2">
+        <SlabToggleGroup aria-label="Diff view mode">
+          <SlabButton
+            variant={effectiveMode === "split" ? "active" : "default"}
+            disabled={isOneSided}
+            onClick={() => setViewMode("split")}
+            aria-pressed={effectiveMode === "split"}
+            aria-label="Side-by-side diff"
+            title="Toggle: Cmd/Ctrl + \\"
           >
-            <Eye className="size-3.5" />
-            {viewedLabel}
-          </Button>
-          <Button
-            type="button"
-            size="xs"
-            className={
-              isReviewed
-                ? "h-7 rounded-md bg-[var(--rd-vermillion)] px-2 text-[11px] text-[var(--rd-ink)] hover:bg-[var(--rd-vermillion-2)]"
-                : "h-7 rounded-md bg-[var(--rd-cream)] px-2 text-[11px] text-[var(--rd-ink)] hover:bg-white"
-            }
-            onClick={onMarkReviewed}
+            split
+          </SlabButton>
+          <SlabButton
+            variant={effectiveMode === "unified" ? "active" : "default"}
+            disabled={isOneSided}
+            onClick={() => setViewMode("unified")}
+            aria-pressed={effectiveMode === "unified"}
+            aria-label="Unified diff"
+            title="Toggle: Cmd/Ctrl + \\"
           >
-            <CheckCircle2 className="size-3.5" />
-            {reviewedLabel}
-          </Button>
-        </div>
+            unified
+          </SlabButton>
+        </SlabToggleGroup>
+
+        <span className="self-stretch w-px bg-[var(--rd-hair)]" aria-hidden />
+
+        <SlabButton
+          variant="default"
+          disabled={file.changeKind === "deleted"}
+          onClick={onOpenFile}
+          aria-label={file.changeKind === "deleted" ? "Deleted file has no working-tree path" : "Open file in editor"}
+          title={file.changeKind === "deleted" ? "Deleted file has no working-tree path" : "Open file in editor"}
+        >
+          open in editor ↗
+        </SlabButton>
+
+        <div className="flex-1" />
+
+        <SlabButton
+          variant="default"
+          onClick={onMarkViewed}
+          aria-label={viewedLabel}
+        >
+          {viewedLabel.toLowerCase()}
+        </SlabButton>
+
+        <span className="self-stretch w-px bg-[var(--rd-hair)]" aria-hidden />
+
+        <SlabButton
+          variant={isReviewed ? "danger" : "primary"}
+          onClick={onMarkReviewed}
+          aria-label={reviewedLabel}
+        >
+          {reviewedLabel.toLowerCase()}
+        </SlabButton>
       </div>
 
       <ScrollArea className="min-h-0 flex-1" viewportRef={scrollViewportRef}>
@@ -400,6 +407,7 @@ export const DiffCanvas = memo(function DiffCanvas({
                               key={comment.id}
                               comment={comment}
                               onDelete={() => onDeleteInlineComment(file.id, comment.id)}
+                              onSave={(updated) => onSaveInlineComment(file.id, updated)}
                             />
                           ))}
                           {threadsForRow(threadsByAnchor, file.path, row).map((t) =>
@@ -460,6 +468,7 @@ export const DiffCanvas = memo(function DiffCanvas({
                               key={comment.id}
                               comment={comment}
                               onDelete={() => onDeleteInlineComment(file.id, comment.id)}
+                              onSave={(updated) => onSaveInlineComment(file.id, updated)}
                             />
                           ))}
                           {threadsForUnified(
@@ -546,66 +555,6 @@ function groupCommentsByPosition(inlineComments: InlineComment[]) {
   return commentsByPosition;
 }
 
-function ViewModeToggle({
-  mode,
-  disabled,
-  onChange,
-}: {
-  mode: DiffViewMode;
-  disabled: boolean;
-  onChange: (mode: DiffViewMode) => void;
-}) {
-  const effective: DiffViewMode = disabled ? "unified" : mode;
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <div
-          className="inline-flex h-7 items-center rounded-md bg-[var(--rd-ink-2)] p-0.5"
-          role="group"
-          aria-label="Diff view mode"
-        >
-          <button
-            type="button"
-            disabled={disabled}
-            onClick={() => onChange("split")}
-            className={[
-              "flex h-6 items-center gap-1 rounded px-1.5 text-[10px] font-medium",
-              effective === "split"
-                ? "bg-[var(--rd-ink-4)] text-[var(--rd-cream)]"
-                : "text-[var(--rd-graphite)] hover:text-[var(--rd-cream)]",
-              disabled ? "cursor-not-allowed opacity-50" : "",
-            ].join(" ")}
-            aria-pressed={effective === "split"}
-            aria-label="Side-by-side diff"
-          >
-            <Columns2 className="size-3" />
-            Split
-          </button>
-          <button
-            type="button"
-            disabled={disabled}
-            onClick={() => onChange("unified")}
-            className={[
-              "flex h-6 items-center gap-1 rounded px-1.5 text-[10px] font-medium",
-              effective === "unified"
-                ? "bg-[var(--rd-ink-4)] text-[var(--rd-cream)]"
-                : "text-[var(--rd-graphite)] hover:text-[var(--rd-cream)]",
-              disabled ? "cursor-not-allowed opacity-50" : "",
-            ].join(" ")}
-            aria-pressed={effective === "unified"}
-            aria-label="Unified diff"
-          >
-            <Rows3 className="size-3" />
-            Unified
-          </button>
-        </div>
-      </TooltipTrigger>
-      <TooltipContent>
-        {disabled ? "Single-sided file" : "Toggle: Cmd/Ctrl + \\"}
-      </TooltipContent>
-    </Tooltip>
-  );
-}
 
 const SplitRow = memo(function SplitRow({
   row,
@@ -629,7 +578,7 @@ const SplitRow = memo(function SplitRow({
       data-anchor={anchor?.diffPosition}
       className={[
         "group grid min-h-6 grid-cols-[56px_minmax(0,1fr)_56px_minmax(0,1fr)] border-b border-[var(--rd-hair)] font-mono text-[12px] leading-6",
-        selected ? "outline outline-1 -outline-offset-1 outline-[var(--rd-vermillion-line)]" : "",
+        selected ? "shadow-[inset_3px_0_0_var(--rd-vermillion)] bg-[rgba(230,106,79,0.06)]" : "",
       ].join(" ")}
     >
       <LineNumber value={row.old?.line.oldLine} hot={oldHot} tone="del" />
@@ -704,7 +653,7 @@ const UnifiedRow = memo(function UnifiedRow({
         "group grid min-h-6 grid-cols-[48px_48px_minmax(0,1fr)] border-b border-[var(--rd-hair)] font-mono text-[12px] leading-6",
         isAddition ? "bg-[var(--rd-add-bg)]" : "",
         isDeletion ? "bg-[var(--rd-del-bg)]" : "",
-        selected ? "outline outline-1 -outline-offset-1 outline-[var(--rd-vermillion-line)]" : "",
+        selected ? "shadow-[inset_3px_0_0_var(--rd-vermillion)] bg-[rgba(230,106,79,0.06)]" : "",
       ].join(" ")}
     >
       <LineNumber value={isAddition ? null : line.oldLine} hot={isDeletion} tone="del" />
@@ -746,66 +695,77 @@ function InlineCommentComposer({
     }
   }, [supportsReviewComments, visibility]);
 
+  // Privacy drives the left-hairline ink color — matches the rendered card.
+  const hairlineColor = visibility === "private" ? "var(--rd-vermillion)" : "var(--rd-graphite)";
+
   return (
-    <div className="border-l-[3px] border-[var(--rd-vermillion-line)] bg-[var(--rd-ink-3)] px-4 py-3">
-      <div className="mb-2 flex items-center justify-between gap-3">
-        <div className="rd-display-italic text-[12px] text-[var(--rd-cream-2)]">
-          Comment on {lineRangeLabel(target)}
+    <div className="relative px-6 py-4">
+      <div
+        className="border-l pl-3.5 ml-[68px]"
+        style={{ borderLeftColor: hairlineColor }}
+      >
+        <div className="mb-2.5 flex items-center justify-between gap-3">
+          <div className="font-voice text-[12px] text-[var(--rd-cream-2)]">
+            comment on {lineRangeLabel(target)}
+          </div>
+          <button
+            type="button"
+            className="font-voice text-[10.5px] text-[var(--rd-pencil)] hover:text-[var(--rd-cream)] lowercase tracking-[0.02em]"
+            onClick={onCancel}
+            aria-label="Cancel comment"
+          >
+            cancel
+          </button>
         </div>
-        <button
-          type="button"
-          className="grid size-6 place-items-center rounded text-[var(--rd-pencil)] hover:bg-[var(--rd-ink-2)] hover:text-[var(--rd-cream)]"
-          onClick={onCancel}
-          aria-label="Cancel comment"
-        >
-          <X className="size-3.5" />
-        </button>
-      </div>
 
-      <Textarea
-        value={body}
-        onChange={(event) => setBody(event.currentTarget.value)}
-        onKeyDown={(event) => {
-          if (event.key !== "Enter" || !event.shiftKey || event.nativeEvent.isComposing) {
-            return;
-          }
-          event.preventDefault();
-          if (canSave) {
-            onSave(body, visibility);
-          }
-        }}
-        autoFocus
-        aria-label="Inline comment body. Markdown supported. Shift Enter adds the comment."
-        placeholder="Write a comment for this line."
-        className="min-h-24 resize-y border-[var(--rd-hair)] bg-[var(--rd-ink-2)] text-[13px] text-[var(--rd-cream)] placeholder:text-[var(--rd-pencil)]"
-      />
+        <Textarea
+          value={body}
+          onChange={(event) => setBody(event.currentTarget.value)}
+          onKeyDown={(event) => {
+            if (event.key !== "Enter" || !event.shiftKey || event.nativeEvent.isComposing) {
+              return;
+            }
+            event.preventDefault();
+            if (canSave) {
+              onSave(body, visibility);
+            }
+          }}
+          autoFocus
+          aria-label="Inline comment body. Markdown supported. Shift Enter adds the comment."
+          placeholder="write a comment for this line."
+          className="min-h-24 resize-y rounded-none border border-[var(--rd-hair)] bg-[var(--rd-ink-2)] px-3.5 py-3 font-voice text-[13px] leading-[1.5] text-[var(--rd-cream)] placeholder:text-[var(--rd-pencil)] placeholder:font-voice focus-visible:border-[var(--rd-vermillion-line)] focus-visible:ring-0 focus-visible:outline-none"
+        />
 
-      <div className="mt-3 flex items-center justify-between gap-3">
-        <div className="flex rounded-md border border-[var(--rd-hair)] bg-[var(--rd-ink-2)] p-0.5">
-          <CommentModeButton
-            active={visibility === "private"}
-            icon={<NotebookPen className="size-3.5" />}
-            label="Private"
-            onClick={() => setVisibility("private")}
-          />
-          {supportsReviewComments ? (
-            <CommentModeButton
-              active={visibility === "review"}
-              icon={<MessageSquare className="size-3.5" />}
-              label="Review"
-              onClick={() => setVisibility("review")}
-            />
-          ) : null}
+        <div className="mt-3 flex items-stretch justify-between gap-0">
+          <div className="flex items-stretch border border-[var(--rd-hair)] divide-x divide-[var(--rd-hair)]">
+            <SlabButton
+              size="compact"
+              variant={visibility === "private" ? "active" : "default"}
+              onClick={() => setVisibility("private")}
+              aria-pressed={visibility === "private"}
+            >
+              private
+            </SlabButton>
+            {supportsReviewComments ? (
+              <SlabButton
+                size="compact"
+                variant={visibility === "review" ? "active" : "default"}
+                onClick={() => setVisibility("review")}
+                aria-pressed={visibility === "review"}
+              >
+                review
+              </SlabButton>
+            ) : null}
+          </div>
+          <SlabButton
+            size="compact"
+            variant="primary"
+            disabled={!canSave}
+            onClick={() => onSave(body, visibility)}
+          >
+            add comment
+          </SlabButton>
         </div>
-        <Button
-          type="button"
-          size="xs"
-          className="h-7 rounded-md bg-[var(--rd-cream)] px-3 text-[11px] text-[var(--rd-ink)] hover:bg-white"
-          disabled={!canSave}
-          onClick={() => onSave(body, visibility)}
-        >
-          Add comment
-        </Button>
       </div>
     </div>
   );
@@ -814,69 +774,116 @@ function InlineCommentComposer({
 const InlineCommentCard = memo(function InlineCommentCard({
   comment,
   onDelete,
+  onSave,
 }: {
   comment: InlineComment;
   onDelete: () => void;
+  onSave: (updated: InlineComment) => void;
 }) {
   const isPrivate = comment.visibility === "private";
+  const [isEditing, setIsEditing] = useState(false);
+  const [draftBody, setDraftBody] = useState(comment.body);
+
+  // Privacy drives the left-hairline ink color. Vermillion for private
+  // (your own ink), graphite for review (will-be-sent-to-GitHub).
+  const hairlineColor = isPrivate ? "var(--rd-vermillion)" : "var(--rd-graphite)";
+
+  const startEdit = () => {
+    setDraftBody(comment.body);
+    setIsEditing(true);
+  };
+
+  const cancelEdit = () => {
+    setDraftBody(comment.body);
+    setIsEditing(false);
+  };
+
+  const saveEdit = () => {
+    const trimmed = draftBody.trim();
+    if (!trimmed || trimmed === comment.body) {
+      cancelEdit();
+      return;
+    }
+    onSave({ ...comment, body: trimmed, updatedAt: new Date().toISOString() });
+    setIsEditing(false);
+  };
 
   return (
-    <div className="border-l-[3px] border-[var(--rd-vermillion-line)] bg-[var(--rd-ink-3)] px-4 py-3">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--rd-pencil)]">
-            {isPrivate ? (
-              <NotebookPen className="size-3 text-[var(--rd-graphite)]" />
-            ) : (
-              <MessageSquare className="size-3 text-[var(--rd-vermillion-2)]" />
-            )}
-            {isPrivate ? "Private" : "Review"}
-            <span className="normal-case tracking-normal text-[var(--rd-graphite)]">
-              {lineRangeLabel(comment)}
-            </span>
-          </div>
-          <MarkdownView className="mt-1.5" compact>
-            {comment.body}
-          </MarkdownView>
-        </div>
-        <button
-          type="button"
-          className="grid size-6 shrink-0 place-items-center rounded text-[var(--rd-pencil)] hover:bg-[var(--rd-ink-2)] hover:text-[var(--rd-del)]"
-          onClick={onDelete}
-          aria-label="Delete inline comment"
-        >
-          <Trash2 className="size-3" />
-        </button>
+    <div className="group/note relative flex px-6 py-3">
+      {/* Body wrapper with the left hairline + indent matching the gutter rhythm */}
+      <div
+        className="min-w-0 flex-1 border-l pl-3.5 ml-[68px]"
+        style={{ borderLeftColor: hairlineColor }}
+      >
+        {isEditing ? (
+          <>
+            <Textarea
+              value={draftBody}
+              onChange={(event) => setDraftBody(event.currentTarget.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  cancelEdit();
+                  return;
+                }
+                if (event.key === "Enter" && event.shiftKey && !event.nativeEvent.isComposing) {
+                  event.preventDefault();
+                  saveEdit();
+                }
+              }}
+              autoFocus
+              aria-label="Edit inline comment body. Markdown supported. Shift Enter saves."
+              className="min-h-20 resize-y rounded-none border border-[var(--rd-hair)] bg-[var(--rd-ink-2)] px-3.5 py-3 font-voice text-[13px] leading-[1.5] text-[var(--rd-cream)] placeholder:text-[var(--rd-pencil)] focus-visible:border-[var(--rd-vermillion-line)] focus-visible:ring-0 focus-visible:outline-none"
+            />
+            <div className="mt-2 flex items-stretch justify-end gap-0 border border-[var(--rd-hair)] w-fit ml-auto divide-x divide-[var(--rd-hair)]">
+              <SlabButton variant="default" size="sm" onClick={cancelEdit}>
+                cancel
+              </SlabButton>
+              <SlabButton
+                variant="primary"
+                size="sm"
+                onClick={saveEdit}
+                disabled={!draftBody.trim() || draftBody.trim() === comment.body}
+              >
+                save
+              </SlabButton>
+            </div>
+          </>
+        ) : (
+          <>
+            <MarkdownView
+              className="rd-voice text-[13px] leading-[1.5] text-[var(--rd-cream)] [&_code]:font-mono [&_code]:text-[0.92em] [&_code]:text-[var(--rd-cream)] [&_code]:bg-transparent [&_code]:px-0"
+              compact
+            >
+              {comment.body}
+            </MarkdownView>
+            <div className="mt-1.5 font-sans text-[10.5px] text-[var(--rd-pencil)]">
+              — {lineRangeLabel(comment)}
+              {isPrivate ? (
+                <>
+                  {" · "}
+                  <span className="font-voice font-medium text-[var(--rd-vermillion-2)]">
+                    private
+                  </span>
+                </>
+              ) : (
+                " · review"
+              )}
+            </div>
+
+            {/* Hover-reveal action group, anchored to the top-right of the body */}
+            <div className="absolute right-6 top-3 flex border border-[var(--rd-hair-2)] divide-x divide-[var(--rd-hair-2)] opacity-0 transition-opacity duration-150 group-hover/note:opacity-100">
+              <SlabButton variant="default" size="sm" onClick={startEdit} aria-label="Edit inline comment">
+                edit
+              </SlabButton>
+              <SlabButton variant="danger" size="sm" onClick={onDelete} aria-label="Delete inline comment">
+                delete
+              </SlabButton>
+            </div>
+          </>
+        )}
       </div>
     </div>
-  );
-});
-
-const CommentModeButton = memo(function CommentModeButton({
-  active,
-  icon,
-  label,
-  onClick,
-}: {
-  active: boolean;
-  icon: ReactNode;
-  label: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      className={[
-        "flex h-6 items-center gap-1 rounded px-2 text-[11px]",
-        active
-          ? "bg-[var(--rd-vermillion-bg)] text-[var(--rd-vermillion-2)]"
-          : "text-[var(--rd-graphite)] hover:text-[var(--rd-cream)]",
-      ].join(" ")}
-      onClick={onClick}
-    >
-      {icon}
-      {label}
-    </button>
   );
 });
 
