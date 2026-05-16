@@ -120,13 +120,15 @@ function App() {
   const activePrNumber =
     session?.target.kind === "pullRequest" ? session.target.number ?? null : null;
   const prContext = usePrContext(repoPath || null, activePrNumber);
+  const prContextIsProvisional = prContext.fromCache && prContext.isRefreshing;
+  const visiblePrContext = prContextIsProvisional ? null : prContext.context;
+  const visibleReviewThreads = visiblePrContext?.reviewThreads ?? [];
   const jumpThreadRef = useRef<(direction: 1 | -1) => void>(() => {});
   const paletteOpenRef = useRef(false);
   paletteOpenRef.current = paletteOpen;
   jumpThreadRef.current = (direction: 1 | -1) => {
-    const threads = prContext.context?.reviewThreads ?? [];
-    if (!session || threads.length === 0) return;
-    const visible = threads.filter((t) => !t.isOutdated);
+    if (!session || visibleReviewThreads.length === 0) return;
+    const visible = visibleReviewThreads.filter((t) => !t.isOutdated);
     if (visible.length === 0) return;
     const currentIdx = expandedThreadId
       ? visible.findIndex((t) => t.id === expandedThreadId)
@@ -1237,7 +1239,7 @@ function App() {
                     onOpenFile={openActiveFile}
                     onSaveInlineComment={saveInlineComment}
                     onDeleteInlineComment={deleteInlineComment}
-                    threads={prContext.context?.reviewThreads}
+                    threads={visibleReviewThreads}
                     expandedThreadId={expandedThreadId}
                     onExpandThread={setExpandedThreadId}
                     onReplyThread={(fileId, threadId, body) => {
@@ -1269,7 +1271,7 @@ function App() {
                     ? () => setPublishOpen(true)
                     : undefined
                 }
-                prContext={prContext.context}
+                prContext={visiblePrContext}
                 prContextError={prContext.error}
                 onJumpToThread={(target) => {
                   const file = session.files.find(

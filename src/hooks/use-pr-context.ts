@@ -4,6 +4,7 @@ import type { PullRequestContext } from "@/types/github";
 
 export type PrContextState = {
   context: PullRequestContext | null;
+  fromCache: boolean;
   isRefreshing: boolean;
   error: string | null;
 };
@@ -11,6 +12,7 @@ export type PrContextState = {
 export function usePrContext(repoPath: string | null, number: number | null) {
   const [state, setState] = useState<PrContextState>({
     context: null,
+    fromCache: false,
     isRefreshing: false,
     error: null,
   });
@@ -19,7 +21,12 @@ export function usePrContext(repoPath: string | null, number: number | null) {
   const load = useCallback(async () => {
     if (!repoPath || number === null) return;
     const id = ++generation.current;
-    setState({ context: null, isRefreshing: true, error: null });
+    setState({
+      context: null,
+      fromCache: false,
+      isRefreshing: true,
+      error: null,
+    });
 
     try {
       const cached = await loadPullRequestContext({
@@ -30,6 +37,7 @@ export function usePrContext(repoPath: string | null, number: number | null) {
       if (id === generation.current && cached.fromCache) {
         setState({
           context: cached.context,
+          fromCache: true,
           isRefreshing: true,
           error: null,
         });
@@ -47,6 +55,7 @@ export function usePrContext(repoPath: string | null, number: number | null) {
       if (id === generation.current) {
         setState({
           context: fresh.context,
+          fromCache: false,
           isRefreshing: false,
           error: null,
         });
@@ -54,7 +63,8 @@ export function usePrContext(repoPath: string | null, number: number | null) {
     } catch (caught) {
       if (id === generation.current) {
         setState((current) => ({
-          ...current,
+          context: current.fromCache ? null : current.context,
+          fromCache: false,
           isRefreshing: false,
           error: caught instanceof Error ? caught.message : String(caught),
         }));
@@ -75,6 +85,7 @@ export function usePrContext(repoPath: string | null, number: number | null) {
       if (id === generation.current) {
         setState({
           context: fresh.context,
+          fromCache: false,
           isRefreshing: false,
           error: null,
         });
@@ -93,7 +104,12 @@ export function usePrContext(repoPath: string | null, number: number | null) {
   useEffect(() => {
     if (!repoPath || number === null) {
       generation.current += 1;
-      setState({ context: null, isRefreshing: false, error: null });
+      setState({
+        context: null,
+        fromCache: false,
+        isRefreshing: false,
+        error: null,
+      });
       return;
     }
     void load();
