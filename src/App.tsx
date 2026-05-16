@@ -37,7 +37,9 @@ import {
   importGlobalActiveReviewSession,
   importReviewSession,
   listReviewRefs,
+  loadActiveReviewFileId,
   loadReviewDiagram,
+  loadLastReviewSessionSnapshot,
   loadLastRepoPath,
   loadRecentRepos,
   loadReviewHistory,
@@ -46,6 +48,7 @@ import {
   loadWorkspaceState,
   openReviewFile,
   rememberRepo,
+  rememberActiveReviewFileId,
   rememberReviewSession,
   reconcileWorkspaceState,
   saveReviewDiagram,
@@ -54,6 +57,7 @@ import {
   toggleViewedStatus,
 } from "@/lib/review-session";
 import type {
+  ActiveReviewSession,
   InlineComment,
   PullRequestSummary,
   RecentRepo,
@@ -187,6 +191,7 @@ function App() {
   const activeSessionPollRef = useRef(false);
   const sessionRef = useRef<ReviewSession | null>(null);
   const activeFileIdRef = useRef<string | null>(null);
+  const currentSessionOpenedAtRef = useRef(0);
   const latestSessionRef = useRef<ReviewSession | null>(null);
   const latestWorkspaceStateRef = useRef<ReviewWorkspaceState>({});
   const workspaceStateReadySessionIdRef = useRef<string | null>(null);
@@ -221,6 +226,12 @@ function App() {
   useEffect(() => {
     activeFileIdRef.current = activeFileId;
   }, [activeFileId]);
+
+  useEffect(() => {
+    if (session) {
+      rememberActiveReviewFileId(session.id, activeFileId);
+    }
+  }, [activeFileId, session]);
 
   useEffect(() => {
     latestSessionRef.current = session;
@@ -347,9 +358,17 @@ function App() {
   const applySession = useCallback((nextSession: ReviewSession) => {
     const previousSession = sessionRef.current;
     const previousActiveFileId = activeFileIdRef.current;
+    const savedActiveFileId = loadActiveReviewFileId(nextSession.id);
+    const fallbackActiveFileId = chooseActiveFileId(
+      nextSession,
+      previousSession,
+      previousActiveFileId,
+      savedActiveFileId,
+    );
     const sameSession = previousSession?.id === nextSession.id;
     const workspaceRequestId = workspaceLoadId.current + 1;
     workspaceLoadId.current = workspaceRequestId;
+    currentSessionOpenedAtRef.current = Date.now();
 
     setRepoPath(nextSession.repo.root);
     setBaseRef(nextSession.repo.baseRef ?? "");
@@ -374,9 +393,7 @@ function App() {
       }
       return {};
     });
-    setActiveFileId(
-      chooseActiveFileId(nextSession, previousSession, previousActiveFileId),
-    );
+    setActiveFileId(fallbackActiveFileId);
     setReviewHistory(rememberReviewSession(nextSession));
 
     if (nextSession.order.manifestPath) {
@@ -394,12 +411,17 @@ function App() {
           return;
         }
 
-        setWorkspaceState((current) => {
-          if (sameSession) {
-            return reconcileWorkspaceState(nextSession, { ...saved, ...current });
-          }
-          return reconcileWorkspaceState(nextSession, saved);
-        });
+        const nextWorkspaceState = sameSession
+          ? reconcileWorkspaceState(nextSession, {
+              ...saved,
+              ...latestWorkspaceStateRef.current,
+            })
+          : reconcileWorkspaceState(nextSession, saved);
+
+        setWorkspaceState(nextWorkspaceState);
+        setActiveFileId(
+          chooseResumeFileId(nextSession, nextWorkspaceState, fallbackActiveFileId),
+        );
         workspaceStateReadySessionIdRef.current = nextSession.id;
         setWorkspaceStateReadySessionId(nextSession.id);
       })
@@ -417,6 +439,15 @@ function App() {
         return;
       }
       if (activeSession.manifestPath === lastSeenActiveManifest.current) {
+        return;
+      }
+      if (
+        !shouldImportActiveSession(
+          activeSession,
+          sessionRef.current,
+          currentSessionOpenedAtRef.current,
+        )
+      ) {
         return;
       }
 
@@ -493,6 +524,15 @@ function App() {
       return;
     }
     if (activeSession.manifestPath === lastSeenActiveManifest.current) {
+      return;
+    }
+    if (
+      !shouldImportActiveSession(
+        activeSession,
+        sessionRef.current,
+        currentSessionOpenedAtRef.current,
+      )
+    ) {
       return;
     }
 
@@ -998,6 +1038,16 @@ function App() {
   }, [activeFile, session]);
 
   useEffect(() => {
+    const lastReviewSession = loadLastReviewSessionSnapshot();
+    if (lastReviewSession) {
+      applySession(lastReviewSession);
+      void loadRefsForRepo(lastReviewSession.repo.root, {
+        applyDefaults: false,
+        loadActive: false,
+      });
+      return;
+    }
+
     const lastRepoPath = loadLastRepoPath();
     if (lastRepoPath) {
       setRepoPath(lastRepoPath);
@@ -1007,7 +1057,7 @@ function App() {
         setError(caught instanceof Error ? caught.message : String(caught));
       });
     }
-  }, [loadRefsForRepo, tryLoadGlobalActiveSession]);
+  }, [applySession, loadRefsForRepo, tryLoadGlobalActiveSession]);
 
   useEffect(() => {
     if (isLoading) {
@@ -1495,9 +1545,16 @@ function chooseActiveFileId(
   nextSession: ReviewSession,
   previousSession: ReviewSession | null,
   previousActiveFileId: string | null,
+  savedActiveFileId: string | null,
 ) {
   if (nextSession.files.length === 0) {
     return null;
+  }
+  if (
+    savedActiveFileId &&
+    nextSession.files.some((file) => file.id === savedActiveFileId)
+  ) {
+    return savedActiveFileId;
   }
   if (
     previousActiveFileId &&
@@ -1514,6 +1571,66 @@ function chooseActiveFileId(
   }
 
   return nextSession.files[0]?.id ?? null;
+}
+
+function chooseResumeFileId(
+  session: ReviewSession,
+  state: ReviewWorkspaceState,
+  fallbackFileId: string | null,
+) {
+  if (session.files.length === 0) {
+    return null;
+  }
+
+  const fallbackFile = fallbackFileId
+    ? session.files.find((file) => file.id === fallbackFileId)
+    : null;
+  if (fallbackFile && needsReview(fileStatus(fallbackFile, state))) {
+    return fallbackFile.id;
+  }
+
+  const firstUnreviewed = session.files.find((file) =>
+    needsReview(fileStatus(file, state)),
+  );
+  return firstUnreviewed?.id ?? fallbackFile?.id ?? session.files[0]?.id ?? null;
+}
+
+function fileStatus(
+  file: ReviewSession["files"][number],
+  state: ReviewWorkspaceState,
+) {
+  return state[file.id]?.status ?? file.viewedStatus;
+}
+
+function needsReview(status: SessionFileState["status"]) {
+  return status !== "reviewed";
+}
+
+function shouldImportActiveSession(
+  activeSession: ActiveReviewSession,
+  currentSession: ReviewSession | null,
+  currentSessionOpenedAt: number,
+) {
+  if (!currentSession) {
+    return true;
+  }
+  if (
+    currentSession.order.manifestPath &&
+    currentSession.order.manifestPath === activeSession.manifestPath
+  ) {
+    return false;
+  }
+
+  const activatedAt = timestampValue(activeSession.activatedAt);
+  return activatedAt > currentSessionOpenedAt;
+}
+
+function timestampValue(value?: string | null) {
+  if (!value) {
+    return 0;
+  }
+  const timestamp = new Date(value).getTime();
+  return Number.isNaN(timestamp) ? 0 : timestamp;
 }
 
 function shouldKeepCurrentSession(

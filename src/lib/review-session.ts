@@ -220,7 +220,11 @@ export function rememberReviewSession(session: ReviewSession): ReviewHistoryItem
     (item) => reviewHistoryKey(item) === nextKey && item.orderSource === "agent",
   );
 
+  window.localStorage.setItem(LAST_REVIEW_SESSION_KEY, session.id);
+  saveReviewSessionSnapshot(session);
+
   if (nextItem.orderSource === "git" && existingAgent) {
+    pruneReviewSessionSnapshots(currentHistory);
     return currentHistory;
   }
 
@@ -232,7 +236,6 @@ export function rememberReviewSession(session: ReviewSession): ReviewHistoryItem
   ].slice(0, 20);
 
   window.localStorage.setItem(REVIEW_HISTORY_KEY, JSON.stringify(nextHistory));
-  saveReviewSessionSnapshot(session);
   pruneReviewSessionSnapshots(nextHistory);
   return nextHistory;
 }
@@ -247,6 +250,7 @@ export function deleteReviewHistoryItem(sessionId: string): ReviewHistoryItem[] 
 export function clearReviewHistory(): ReviewHistoryItem[] {
   const currentHistory = loadReviewHistory();
   window.localStorage.removeItem(REVIEW_HISTORY_KEY);
+  window.localStorage.removeItem(LAST_REVIEW_SESSION_KEY);
   for (const item of currentHistory) {
     deleteReviewSessionSnapshot(item.id);
   }
@@ -256,6 +260,32 @@ export function clearReviewHistory(): ReviewHistoryItem[] {
 
 export function loadReviewSessionSnapshot(sessionId: string): ReviewSession | null {
   return readJson<ReviewSession | null>(reviewSessionSnapshotKey(sessionId), null);
+}
+
+export function loadLastReviewSessionSnapshot(): ReviewSession | null {
+  const sessionId = window.localStorage.getItem(LAST_REVIEW_SESSION_KEY);
+  if (!sessionId) {
+    return null;
+  }
+
+  const snapshot = loadReviewSessionSnapshot(sessionId);
+  if (!snapshot) {
+    window.localStorage.removeItem(LAST_REVIEW_SESSION_KEY);
+  }
+  return snapshot;
+}
+
+export function loadActiveReviewFileId(sessionId: string): string | null {
+  return window.localStorage.getItem(activeReviewFileKey(sessionId));
+}
+
+export function rememberActiveReviewFileId(sessionId: string, fileId: string | null) {
+  const key = activeReviewFileKey(sessionId);
+  if (!fileId) {
+    window.localStorage.removeItem(key);
+    return;
+  }
+  window.localStorage.setItem(key, fileId);
 }
 
 export function loadReviewSessionSnapshotForTarget({
@@ -287,6 +317,10 @@ export function saveReviewSessionSnapshot(session: ReviewSession) {
 
 export function pruneReviewSessionSnapshots(history = loadReviewHistory()) {
   const activeIds = new Set(history.map((item) => item.id));
+  const lastReviewSessionId = window.localStorage.getItem(LAST_REVIEW_SESSION_KEY);
+  if (lastReviewSessionId) {
+    activeIds.add(lastReviewSessionId);
+  }
   const staleKeys: string[] = [];
 
   for (let index = 0; index < window.localStorage.length; index += 1) {
@@ -638,6 +672,14 @@ function reviewSessionSnapshotKey(sessionId: string) {
 
 function deleteReviewSessionSnapshot(sessionId: string) {
   window.localStorage.removeItem(reviewSessionSnapshotKey(sessionId));
+  window.localStorage.removeItem(activeReviewFileKey(sessionId));
+  if (window.localStorage.getItem(LAST_REVIEW_SESSION_KEY) === sessionId) {
+    window.localStorage.removeItem(LAST_REVIEW_SESSION_KEY);
+  }
+}
+
+function activeReviewFileKey(sessionId: string) {
+  return `${ACTIVE_REVIEW_FILE_PREFIX}${sessionId}`;
 }
 
 function readJson<T>(key: string, fallback: T): T {
@@ -661,4 +703,6 @@ function basename(path: string) {
 const RECENT_REPOS_KEY = "review-desk.recent-repos";
 const REVIEW_HISTORY_KEY = "review-desk.review-history";
 const REVIEW_SESSION_SNAPSHOT_PREFIX = "review-desk.review-session-snapshot.";
+const LAST_REVIEW_SESSION_KEY = "review-desk.last-review-session";
+const ACTIVE_REVIEW_FILE_PREFIX = "review-desk.active-review-file.";
 const LAST_REPO_KEY = "review-desk.last-repo";
