@@ -14,13 +14,6 @@ export type LedgerEntry =
       body: string;
     }
   | {
-      kind: "public-file-draft";
-      id: string;
-      fileId: string;
-      filePath: string;
-      body: string;
-    }
-  | {
       kind: "private-inline";
       id: string;
       fileId: string;
@@ -76,17 +69,6 @@ export function collectLedger(
       });
     }
 
-    const draft = state.publishableDraft?.trim() ?? "";
-    if (supportsReviewComments && draft) {
-      entries.push({
-        kind: "public-file-draft",
-        id: `${file.id}-public-draft`,
-        fileId: file.id,
-        filePath: file.path,
-        body: draft,
-      });
-    }
-
     for (const comment of state.inlineComments ?? []) {
       if (!supportsReviewComments && comment.visibility === "review") {
         continue;
@@ -121,9 +103,7 @@ export function filterLedger(
       (entry) => entry.kind === "private-file-note" || entry.kind === "private-inline",
     );
   }
-  return entries.filter(
-    (entry) => entry.kind === "public-file-draft" || entry.kind === "review-inline",
-  );
+  return entries.filter((entry) => entry.kind === "review-inline");
 }
 
 export function groupLedgerByFile(
@@ -169,8 +149,6 @@ function entryOrder(entry: LedgerEntry): number {
   switch (entry.kind) {
     case "private-file-note":
       return 0;
-    case "public-file-draft":
-      return 1;
     case "private-inline":
     case "review-inline":
       return 2;
@@ -193,9 +171,6 @@ export function countByKind(entries: LedgerEntry[]) {
 export function lineRangeLabel(entry: LedgerEntry): string {
   if (entry.kind === "private-file-note") {
     return "File note";
-  }
-  if (entry.kind === "public-file-draft") {
-    return "File draft";
   }
   const side = entry.side === "old" ? "old" : "new";
   if (!entry.startLine && !entry.endLine) {

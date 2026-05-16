@@ -9,14 +9,13 @@ import {
 } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { AlertCircle, FileDiff, Map as MapIcon } from "lucide-react";
-import { CommandBar } from "@/components/review/CommandBar";
 import { DiffCanvas } from "@/components/review/DiffCanvas";
 import { EmptyState } from "@/components/review/EmptyState";
 import { Inspector } from "@/components/review/Inspector";
-import { PublishSheet } from "@/components/review/PublishSheet";
+import { PublishMergeSheet } from "@/components/review/PublishMergeSheet";
 import { ReviewRail } from "@/components/review/ReviewRail";
-import { SessionHeader } from "@/components/review/SessionHeader";
 import { SessionSwitcher } from "@/components/review/SessionSwitcher";
+import { TopBar } from "@/components/review/topbar/TopBar";
 import { Button } from "@/components/ui/button";
 import { useKeybinding } from "@/hooks/use-keybinding";
 import { usePrContext } from "@/hooks/use-pr-context";
@@ -34,6 +33,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { useDiffViewMode } from "@/hooks/use-diff-view-mode";
 import { useFontZoom } from "@/hooks/use-font-zoom";
 import {
+  clearRecentRepos,
   clearReviewHistory,
   createDefaultFileState,
   createReviewSession,
@@ -86,7 +86,7 @@ type SelectedPullRequest = Pick<
 type JumpTarget = {
   fileId: string;
   diffPosition?: number;
-  expandSection?: "private" | "draft";
+  expandSection?: "private";
   requestedAt: number;
 };
 
@@ -923,28 +923,6 @@ function App() {
     [rangeFromRef, startTargetSession],
   );
 
-  const changePullRequestNumber = useCallback(
-    (value: number | null) => {
-      setPullRequestNumber(value);
-      setTargetKind("pullRequest");
-      if (!value) {
-        return;
-      }
-
-      const pullRequest =
-        inbox.data?.pullRequests.find((item) => item.number === value) ??
-        repoRefs?.pullRequests.find((item) => item.number === value) ?? null;
-      startTargetSession({
-        kind: "pullRequest",
-        number: value,
-        url: pullRequest?.url ?? null,
-        baseRef: pullRequest?.baseRefName ?? null,
-        headRef: null,
-      });
-    },
-    [inbox.data?.pullRequests, repoRefs, startTargetSession],
-  );
-
   const changePullRequestInput = useCallback((value: string) => {
     setPullRequestInput(value);
   }, []);
@@ -1024,17 +1002,6 @@ function App() {
   }, [isRefsLoading, loadRefsForRepo, repoPath]);
 
   const handleScrollHandled = useCallback(() => setJumpTarget(null), []);
-
-  const jumpToNote = useCallback(
-    (target: { fileId: string; diffPosition?: number; expandSection?: "private" | "draft" }) => {
-      if (target.fileId !== activeFileId) {
-        // The existing useEffect that depends on activeFileId will advance unseen → viewed.
-        setActiveFileId(target.fileId);
-      }
-      setJumpTarget({ ...target, requestedAt: Date.now() });
-    },
-    [activeFileId],
-  );
 
   const selectFile = useCallback((fileId: string) => {
     const file = sessionRef.current?.files.find((item) => item.id === fileId);
@@ -1207,11 +1174,6 @@ function App() {
     };
   }, []);
 
-  const changeRepoPath = useCallback((value: string) => {
-    setRepoPath(value);
-    setRepoRefs(null);
-  }, []);
-
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       const target = event.target as HTMLElement | null;
@@ -1235,64 +1197,119 @@ function App() {
   return (
     <TooltipProvider>
       <main className="rd-app dark flex h-[100dvh] min-h-[100dvh] w-full max-w-full flex-col overflow-hidden">
-        <CommandBar
-          repoPath={repoPath}
+        <TopBar
+          session={session}
+          targetKind={targetKind}
           baseRef={baseRef}
           headRef={headRef}
-          targetKind={targetKind}
           commitRef={commitRef}
           rangeFromRef={rangeFromRef}
           rangeToRef={rangeToRef}
-          pullRequestNumber={pullRequestNumber}
           pullRequestInput={pullRequestInput}
-          isLoading={isLoading}
-          session={session}
-          workspaceState={workspaceState}
-          fontZoom={fontZoom}
+          pullRequestNumber={pullRequestNumber}
+          repoPath={repoPath}
           repoRefs={repoRefs}
-          pullRequests={inbox.data?.pullRequests ?? repoRefs?.pullRequests ?? []}
-          pullRequestError={inbox.error ?? repoRefs?.pullRequestError ?? null}
           recentRepos={recentRepos}
-          reviewHistory={reviewHistory}
+          pullRequests={inbox.data?.pullRequests ?? []}
+          isInboxLoading={inbox.isRefreshing}
+          inboxError={inbox.error}
           isRefsLoading={isRefsLoading}
+          isLoading={isLoading}
+          prSummary={(() => {
+            if (!session || session.target.kind !== "pullRequest") return null;
+            const n = session.target.number;
+            if (n === null || n === undefined) return null;
+            return inbox.data?.pullRequests.find((pr) => pr.number === n) ?? null;
+          })()}
+          prContext={prContext.context}
+          prContextError={prContext.error}
+          workspaceState={workspaceState}
+          activeFile={activeFile}
+          reviewHistory={reviewHistory}
+          publishLabelCount={countPublishableDrafts(workspaceState)}
+          fontZoom={fontZoom}
           onResetFontZoom={resetFontZoom}
-          onRepoPathChange={changeRepoPath}
+          onPickFolder={pickRepo}
+          onSelectRepo={openRepoPath}
+          onRefreshRefs={refreshRefs}
+          onClearRecentRepos={() => {
+            clearRecentRepos();
+            setRecentRepos([]);
+          }}
+          onTargetKindChange={changeTargetKind}
           onBaseRefChange={changeBaseRef}
           onHeadRefChange={changeHeadRef}
-          onTargetKindChange={changeTargetKind}
           onCommitRefChange={changeCommitRef}
           onRangeFromRefChange={changeRangeFromRef}
           onRangeToRefChange={changeRangeToRef}
-          onPullRequestNumberChange={changePullRequestNumber}
           onPullRequestInputChange={changePullRequestInput}
           onPullRequestInputSubmit={submitPullRequestInput}
-          onPickRepo={pickRepo}
-          onSelectRecentRepo={openRepoPath}
+          onPickPullRequest={(pr) =>
+            void startSession({
+              target: {
+                kind: "pullRequest",
+                number: pr.number,
+                url: pr.url,
+                baseRef: pr.baseRefName,
+                headRef: null,
+              },
+            })
+          }
+          onCreateSession={createSession}
+          onImportAgentSession={importAgentSession}
+          onOpenPublish={() => setPublishOpen(true)}
           onSelectReviewHistory={resumeReview}
           onDeleteReviewHistory={deleteHistoryItem}
           onClearReviewHistory={clearHistory}
-          onRefreshRefs={refreshRefs}
-          onImportAgentSession={importAgentSession}
-          onCreateSession={createSession}
-        />
-        {session ? (
-          <SessionHeader
-            session={session}
-            prSummary={(() => {
-              if (session.target.kind !== "pullRequest") return null;
-              const n = session.target.number;
-              if (n === null || n === undefined) return null;
-              return (
-                inbox.data?.pullRequests.find((pr) => pr.number === n) ?? null
+          onJumpToDraft={(target) => {
+            setActiveFileId(target.fileId);
+            if ("diffPosition" in target) {
+              setJumpTarget({
+                fileId: target.fileId,
+                diffPosition: target.diffPosition,
+                requestedAt: Date.now(),
+              });
+            } else if ("expandSection" in target) {
+              setJumpTarget({
+                fileId: target.fileId,
+                expandSection: "private",
+                requestedAt: Date.now(),
+              });
+            } else {
+              const thread = prContext.context?.reviewThreads.find((t) => t.id === target.threadId);
+              if (thread) {
+                const file = session?.files.find((f) => f.path === thread.path);
+                if (file) {
+                  setActiveFileId(file.id);
+                  setJumpTarget({ fileId: file.id, requestedAt: Date.now() });
+                }
+              }
+            }
+          }}
+          onDropDraft={(target) => {
+            if (!session) return;
+            if ("diffPosition" in target) {
+              const fs = workspaceState[target.fileId];
+              const matching = fs?.inlineComments.find(
+                (c) => c.endDiffPosition === target.diffPosition && c.visibility === "review",
               );
-            })()}
-            isStaleHead={false}
-            draftsCount={countPublishableDrafts(workspaceState)}
-            onOpenSwitcher={() => setPaletteOpen(true)}
-            onRefresh={() => createSession()}
-            onOpenPublish={() => setPublishOpen(true)}
-          />
-        ) : null}
+              if (matching) deleteInlineComment(target.fileId, matching.id);
+            } else if ("expandSection" in target) {
+              patchFileState(target.fileId, { privateNote: "" });
+            } else {
+              const fs = workspaceState[target.fileId];
+              const next = { ...(fs?.threadReplies ?? {}) };
+              delete next[target.threadId];
+              patchFileState(target.fileId, { threadReplies: next });
+            }
+          }}
+          onJumpToThread={(target) => {
+            const file = session?.files.find((f) => f.path === target.path);
+            if (!file) return;
+            setActiveFileId(file.id);
+            setJumpTarget({ fileId: file.id, requestedAt: Date.now() });
+          }}
+        />
 
         {error ? (
           <div className="flex items-center gap-2 border-b border-[var(--rd-del-line)] bg-[var(--rd-del-bg)] px-4 py-2 text-sm text-[var(--rd-del)]">
@@ -1362,20 +1379,12 @@ function App() {
                 session={session}
                 file={activeFile}
                 fileState={activeFileState}
-                workspaceState={workspaceState}
                 jumpTarget={jumpTarget}
                 onScrollHandled={handleScrollHandled}
-                onJumpToNote={jumpToNote}
                 onPatchFileState={patchFileState}
                 onMarkViewed={markActiveViewed}
                 onMarkReviewed={markActiveReviewed}
-                onPublishReview={
-                  session.target.kind === "pullRequest"
-                    ? () => setPublishOpen(true)
-                    : undefined
-                }
                 prContext={visiblePrContext}
-                prContextError={prContext.error}
                 onJumpToThread={(target) => {
                   const file = session.files.find(
                     (f) => f.path === target.path,
@@ -1386,6 +1395,9 @@ function App() {
                     fileId: file.id,
                     requestedAt: Date.now(),
                   });
+                }}
+                onOpenAllThreads={() => {
+                  // No-op for now: user can click the threads pill in the top bar
                 }}
               />
             </ResizablePanel>
@@ -1453,7 +1465,7 @@ function App() {
           </div>
         ) : null}
         {session && session.target.kind === "pullRequest" ? (
-          <PublishSheet
+          <PublishMergeSheet
             open={publishOpen}
             session={session}
             workspaceState={workspaceState}
@@ -1478,7 +1490,6 @@ function countPublishableDrafts(state: ReviewWorkspaceState): number {
   let n = 0;
   for (const fs of Object.values(state)) {
     if (!fs) continue;
-    if ((fs.publishableDraft?.trim().length ?? 0) > 0) n++;
     for (const c of fs.inlineComments ?? []) {
       if (c.visibility === "review") n++;
     }

@@ -94,7 +94,6 @@ export function createDefaultFileState(): SessionFileState {
     status: "unseen",
     lastPatchHash: undefined,
     privateNote: "",
-    publishableDraft: "",
     inlineComments: [],
     threadReplies: {},
   };
@@ -156,6 +155,10 @@ export async function saveWorkspaceState(
 
 export function loadRecentRepos(): RecentRepo[] {
   return readJson<RecentRepo[]>(RECENT_REPOS_KEY, []);
+}
+
+export function clearRecentRepos(): void {
+  window.localStorage.removeItem(RECENT_REPOS_KEY);
 }
 
 export function rememberRepo(refs: RepoRefs): RecentRepo[] {
@@ -541,9 +544,9 @@ export function reconcileWorkspaceState(
     const source: SessionFileState =
       candidateById ?? candidateByOldPath ?? candidateByPath ?? createDefaultFileState();
 
-    const previous = {
+    const previous: SessionFileState = {
       ...createDefaultFileState(),
-      ...source,
+      ...stripUnknownFields(source),
     };
     let status = previous.status;
 
@@ -585,13 +588,13 @@ function mergeFileState(
   current: SessionFileState | undefined,
   recovered: SessionFileState | undefined,
 ): SessionFileState {
-  const currentState = {
+  const currentState: SessionFileState = {
     ...createDefaultFileState(),
-    ...current,
+    ...stripUnknownFields(current),
   };
-  const recoveredState = {
+  const recoveredState: SessionFileState = {
     ...createDefaultFileState(),
-    ...recovered,
+    ...stripUnknownFields(recovered),
   };
 
   return {
@@ -604,9 +607,6 @@ function mergeFileState(
     privateNote: currentState.privateNote?.trim()
       ? currentState.privateNote
       : (recoveredState.privateNote ?? ""),
-    publishableDraft: currentState.publishableDraft?.trim()
-      ? currentState.publishableDraft
-      : (recoveredState.publishableDraft ?? ""),
     inlineComments: mergeInlineComments(
       currentState.inlineComments ?? [],
       recoveredState.inlineComments ?? [],
@@ -620,6 +620,14 @@ function mergeFileState(
         : {}),
     },
   };
+}
+
+function stripUnknownFields(
+  value: SessionFileState | undefined,
+): Partial<SessionFileState> | undefined {
+  if (!value) return value;
+  const { status, lastPatchHash, privateNote, inlineComments, threadReplies } = value as SessionFileState & { publishableDraft?: string };
+  return { status, lastPatchHash, privateNote, inlineComments, threadReplies };
 }
 
 function viewedStatusRank(status: ViewedStatus | undefined) {

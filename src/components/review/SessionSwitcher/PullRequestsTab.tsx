@@ -124,10 +124,14 @@ export function PullRequestsTab(props: Props) {
         const hasDraft = ws
           ? Object.values(ws).some(
               (fs) =>
-                (fs?.publishableDraft?.trim().length ?? 0) > 0 ||
                 (fs?.inlineComments?.some(
                   (c) => c.visibility === "review",
-                ) ?? false),
+                ) ?? false) ||
+                (fs?.threadReplies
+                  ? Object.values(fs.threadReplies).some(
+                      (reply) => reply.trim().length > 0,
+                    )
+                  : false),
             )
           : false;
         out.push({ kind: "row", pr, rowIndex, hasDraft });

@@ -361,7 +361,6 @@ export type SessionFileState = {
   status: ViewedStatus;
   lastPatchHash?: string;
   privateNote: string;
-  publishableDraft: string;
   inlineComments: InlineComment[];
   threadReplies?: Record<string, string>;
 };

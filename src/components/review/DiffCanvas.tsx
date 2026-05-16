@@ -46,7 +46,7 @@ import type {
 type JumpTarget = {
   fileId: string;
   diffPosition?: number;
-  expandSection?: "private" | "draft";
+  expandSection?: "private";
   requestedAt: number;
 };
 

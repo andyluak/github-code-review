@@ -15,6 +15,35 @@ export type ChecksSummary = {
   total: number;
 };
 
+export type CheckRunState =
+  | "success"
+  | "failure"
+  | "timed_out"
+  | "in_progress"
+  | "queued"
+  | "neutral"
+  | "skipped"
+  | "cancelled"
+  | "action_required"
+  | "stale";
+
+export type CheckRun = {
+  id: string;
+  name: string;
+  source: string | null;
+  state: CheckRunState;
+  required: boolean;
+  url: string | null;
+  startedAt: string | null;
+  durationMs: number | null;
+};
+
+export type ListCheckRunsResponse = {
+  headSha: string;
+  fetchedAt: string;
+  checks: CheckRun[];
+};
+
 export type PrAuthor = {
   login: string;
   avatarUrl?: string | null;
