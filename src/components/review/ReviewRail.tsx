@@ -1,4 +1,4 @@
-import { memo, useDeferredValue, useMemo, useRef, useState } from "react";
+import { memo, useDeferredValue, useMemo, useRef, useState, type Ref } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Search } from "lucide-react";
 import { Input } from "@/components/ui/input";
@@ -15,6 +15,7 @@ type ReviewRailProps = {
   activeFileId: string | null;
   workspaceState: ReviewWorkspaceState;
   onSelectFile: (fileId: string) => void;
+  filterInputRef?: Ref<HTMLInputElement>;
 };
 
 export function ReviewRail({
@@ -22,6 +23,7 @@ export function ReviewRail({
   activeFileId,
   workspaceState,
   onSelectFile,
+  filterInputRef,
 }: ReviewRailProps) {
   const files = session.files;
   const isAgentOrder = session.order.source === "agent";
@@ -77,9 +79,11 @@ export function ReviewRail({
             <div className="relative">
               <Search className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-[var(--rd-pencil)]" />
               <Input
+                ref={filterInputRef}
                 value={query}
                 onChange={(event) => setQuery(event.currentTarget.value)}
                 placeholder="Filter files"
+                aria-keyshortcuts="/"
                 className="h-7 border-0 bg-[var(--rd-ink-2)] pl-7 font-mono text-[11px] text-[var(--rd-cream)] placeholder:text-[var(--rd-pencil)]"
               />
             </div>

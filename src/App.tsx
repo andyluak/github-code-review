@@ -16,10 +16,11 @@ import { Inspector } from "@/components/review/Inspector";
 import { PublishMergeSheet } from "@/components/review/PublishMergeSheet";
 import { ReviewRail } from "@/components/review/ReviewRail";
 import { SessionSwitcher } from "@/components/review/SessionSwitcher";
+import { ShortcutHelpOverlay } from "@/components/review/ShortcutHelpOverlay";
 import { TopBar } from "@/components/review/topbar/TopBar";
 import { SlabButton } from "@/components/ui/slab-button";
 import { SlabToggleGroup } from "@/components/ui/slab-toggle-group";
-import { useKeybinding } from "@/hooks/use-keybinding";
+import { useKeybinding, type Binding } from "@/hooks/use-keybinding";
 import { usePrContext } from "@/hooks/use-pr-context";
 import { usePrInbox } from "@/hooks/use-pr-inbox";
 import type {
@@ -96,6 +97,7 @@ type JumpTarget = {
 type CenterMode = "diff" | "map";
 
 const EMPTY_FILE_STATE = createDefaultFileState();
+const SINGLE_KEY_SHORTCUTS_STORAGE_KEY = "review-desk.single-key-shortcuts";
 const preloadReviewMap = () => import("@/components/review/ReviewMap");
 const ReviewMap = lazy(() =>
   preloadReviewMap().then((module) => ({ default: module.ReviewMap })),
@@ -138,6 +140,10 @@ function App() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [publishOpen, setPublishOpen] = useState(false);
   const [handoffOpen, setHandoffOpen] = useState(false);
+  const [shortcutHelpOpen, setShortcutHelpOpen] = useState(false);
+  const [singleKeyShortcutsEnabled, setSingleKeyShortcutsEnabled] = useState(
+    () => window.localStorage.getItem(SINGLE_KEY_SHORTCUTS_STORAGE_KEY) !== "off",
+  );
   const [expandedThreadId, setExpandedThreadId] = useState<string | null>(null);
   const inbox = usePrInbox(repoPath || null);
   const activePrNumber =
@@ -147,8 +153,14 @@ function App() {
   const visibleReviewThreads = visiblePrContext?.reviewThreads ?? [];
   const hasReviewMapSource = Boolean(reviewDiagram?.source.trim());
   const jumpThreadRef = useRef<(direction: 1 | -1) => void>(() => {});
-  const paletteOpenRef = useRef(false);
-  paletteOpenRef.current = paletteOpen;
+  const queueFilterInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    window.localStorage.setItem(
+      SINGLE_KEY_SHORTCUTS_STORAGE_KEY,
+      singleKeyShortcutsEnabled ? "on" : "off",
+    );
+  }, [singleKeyShortcutsEnabled]);
 
   useEffect(() => {
     if (!session) {
@@ -185,38 +197,6 @@ function App() {
       setJumpTarget({ fileId: file.id, requestedAt: Date.now() });
     }
   };
-  useKeybinding(
-    useMemo(
-      () => [
-        {
-          combo: "cmd+k",
-          handler: () => setPaletteOpen((v) => !v),
-        },
-        {
-          combo: "t",
-          handler: () => {
-            if (paletteOpenRef.current) return;
-            setExpandedThreadId((current) => (current ? null : current));
-          },
-        },
-        {
-          combo: "]",
-          handler: () => {
-            if (paletteOpenRef.current) return;
-            jumpThreadRef.current(1);
-          },
-        },
-        {
-          combo: "[",
-          handler: () => {
-            if (paletteOpenRef.current) return;
-            jumpThreadRef.current(-1);
-          },
-        },
-      ],
-      [],
-    ),
-  );
   const refLoadId = useRef(0);
   const sessionLoadId = useRef(0);
   const diagramLoadId = useRef(0);
@@ -981,6 +961,201 @@ function App() {
     });
   }, [activeFile, session]);
 
+  const moveActiveFile = useCallback(
+    (direction: 1 | -1) => {
+      const currentSession = sessionRef.current;
+      if (!currentSession || currentSession.files.length === 0) return;
+      const currentId = activeFileIdRef.current;
+      const currentIndex = currentId
+        ? currentSession.files.findIndex((file) => file.id === currentId)
+        : -1;
+      const fallbackIndex = direction === 1 ? 0 : currentSession.files.length - 1;
+      const nextIndex =
+        currentIndex < 0
+          ? fallbackIndex
+          : Math.min(
+              currentSession.files.length - 1,
+              Math.max(0, currentIndex + direction),
+            );
+      const nextFile = currentSession.files[nextIndex];
+      if (nextFile) {
+        selectFile(nextFile.id);
+      }
+    },
+    [selectFile],
+  );
+
+  const markActiveReviewedAndAdvance = useCallback(() => {
+    const currentSession = sessionRef.current;
+    const currentId = activeFileIdRef.current;
+    if (!currentSession || !currentId) return;
+    const currentIndex = currentSession.files.findIndex((file) => file.id === currentId);
+    const currentFile = currentSession.files[currentIndex];
+    if (!currentFile) return;
+
+    patchFileState(currentFile.id, {
+      status: "reviewed",
+      lastPatchHash: currentFile.patchHash,
+    });
+
+    const nextFile = currentSession.files[currentIndex + 1];
+    if (nextFile) {
+      selectFile(nextFile.id);
+    }
+  }, [patchFileState, selectFile]);
+
+  const focusQueueFilter = useCallback(() => {
+    queueFilterInputRef.current?.focus();
+    queueFilterInputRef.current?.select();
+  }, []);
+
+  const topLayerOpen = shortcutHelpOpen || paletteOpen || publishOpen || handoffOpen;
+  const canUseReviewShortcuts = Boolean(session) && !topLayerOpen;
+  const reviewShortcutBindings = useMemo<Binding[]>(
+    () => [
+      {
+        combo: "F1",
+        label: "Open shortcut help",
+        group: "General",
+        disabled: shortcutHelpOpen,
+        handler: () => setShortcutHelpOpen(true),
+      },
+      {
+        combo: "?",
+        label: "Open shortcut help",
+        group: "General",
+        disabled: topLayerOpen,
+        handler: () => setShortcutHelpOpen(true),
+      },
+      {
+        combo: "Escape",
+        label: "Close the top panel",
+        group: "General",
+        disabled: !topLayerOpen,
+        handler: () => {
+          if (shortcutHelpOpen) setShortcutHelpOpen(false);
+          else if (paletteOpen) setPaletteOpen(false);
+          else if (publishOpen) setPublishOpen(false);
+          else if (handoffOpen) setHandoffOpen(false);
+        },
+      },
+      {
+        combo: "cmd+k",
+        label: "Switch review target",
+        group: "General",
+        disabled: !repoPath || publishOpen || handoffOpen || shortcutHelpOpen,
+        handler: () => setPaletteOpen((current) => !current),
+      },
+      {
+        combo: "cmd+Backslash",
+        label: "Toggle split/unified diff",
+        group: "Diff",
+        disabled: topLayerOpen,
+        handler: () => toggleDiffViewMode(),
+      },
+      {
+        combo: "/",
+        label: "Focus queue filter",
+        group: "Queue",
+        disabled: !canUseReviewShortcuts,
+        handler: focusQueueFilter,
+      },
+      {
+        combo: "j",
+        label: "Next file",
+        group: "Queue",
+        disabled: !canUseReviewShortcuts,
+        allowRepeat: true,
+        handler: () => moveActiveFile(1),
+      },
+      {
+        combo: "k",
+        label: "Previous file",
+        group: "Queue",
+        disabled: !canUseReviewShortcuts,
+        allowRepeat: true,
+        handler: () => moveActiveFile(-1),
+      },
+      {
+        combo: "v",
+        label: "Mark viewed or unviewed",
+        group: "Queue",
+        disabled: !canUseReviewShortcuts || !activeFile,
+        handler: markActiveViewed,
+      },
+      {
+        combo: "r",
+        label: "Mark reviewed and advance",
+        group: "Queue",
+        disabled: !canUseReviewShortcuts || !activeFile,
+        handler: markActiveReviewedAndAdvance,
+      },
+      {
+        combo: "o",
+        label: "Open active file in editor",
+        group: "Queue",
+        disabled:
+          !canUseReviewShortcuts ||
+          !activeFile ||
+          activeFile.changeKind === "deleted",
+        handler: openActiveFile,
+      },
+      {
+        combo: "[",
+        label: "Previous PR thread",
+        group: "Threads",
+        disabled: !canUseReviewShortcuts || visibleReviewThreads.length === 0,
+        allowRepeat: true,
+        handler: () => jumpThreadRef.current(-1),
+      },
+      {
+        combo: "]",
+        label: "Next PR thread",
+        group: "Threads",
+        disabled: !canUseReviewShortcuts || visibleReviewThreads.length === 0,
+        allowRepeat: true,
+        handler: () => jumpThreadRef.current(1),
+      },
+      {
+        combo: "p",
+        label: "Open publish sheet",
+        group: "Publish",
+        disabled: !canUseReviewShortcuts || !supportsReviewComments,
+        handler: () => setPublishOpen(true),
+      },
+      {
+        combo: "h",
+        label: "Open agent handoff",
+        group: "Publish",
+        disabled: !canUseReviewShortcuts || !session,
+        handler: () => setHandoffOpen(true),
+      },
+    ],
+    [
+      activeFile,
+      canUseReviewShortcuts,
+      focusQueueFilter,
+      handoffOpen,
+      markActiveReviewedAndAdvance,
+      markActiveViewed,
+      moveActiveFile,
+      openActiveFile,
+      paletteOpen,
+      publishOpen,
+      repoPath,
+      session,
+      shortcutHelpOpen,
+      supportsReviewComments,
+      toggleDiffViewMode,
+      topLayerOpen,
+      visibleReviewThreads.length,
+    ],
+  );
+
+  useKeybinding(reviewShortcutBindings, {
+    singleKeyShortcutsEnabled,
+  });
+
   useEffect(() => {
     const lastReviewSession = loadLastReviewSessionSnapshot();
     if (lastReviewSession) {
@@ -1110,26 +1285,6 @@ function App() {
       flushWorkspaceState();
     };
   }, []);
-
-  useEffect(() => {
-    function onKeyDown(event: KeyboardEvent) {
-      const target = event.target as HTMLElement | null;
-      const isEditing =
-        target &&
-        (target.tagName === "INPUT" ||
-          target.tagName === "TEXTAREA" ||
-          target.isContentEditable);
-      if (isEditing) {
-        return;
-      }
-      if ((event.metaKey || event.ctrlKey) && !event.shiftKey && event.key === "\\") {
-        event.preventDefault();
-        toggleDiffViewMode();
-      }
-    }
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [toggleDiffViewMode]);
 
   return (
     <TooltipProvider>
@@ -1290,18 +1445,20 @@ function App() {
                 activeFileId={activeFileId}
                 workspaceState={workspaceState}
                 onSelectFile={selectFile}
+                filterInputRef={queueFilterInputRef}
               />
             </ResizablePanel>
             <ResizableHandle />
             <ResizablePanel defaultSize="52%" minSize="36%">
               <section className="flex h-full min-h-0 flex-col bg-[var(--rd-ink)]">
-                <CenterModeToggle mode={centerMode} onChange={setCenterMode} />
                 <div className="min-h-0 flex-1">
                   <DiffCanvas
                     file={activeFile}
                     fileState={activeFileState}
                     jumpTarget={jumpTarget}
                     supportsReviewComments={supportsReviewComments}
+                    centerMode={centerMode}
+                    onCenterModeChange={setCenterMode}
                     onScrollHandled={handleScrollHandled}
                     onMarkViewed={markActiveViewed}
                     onMarkReviewed={markActiveReviewed}
@@ -1417,6 +1574,13 @@ function App() {
             />
           </div>
         ) : null}
+        <ShortcutHelpOverlay
+          open={shortcutHelpOpen}
+          shortcuts={reviewShortcutBindings}
+          singleKeyShortcutsEnabled={singleKeyShortcutsEnabled}
+          onSingleKeyShortcutsChange={setSingleKeyShortcutsEnabled}
+          onClose={() => setShortcutHelpOpen(false)}
+        />
         {session && session.target.kind === "pullRequest" ? (
           <PublishMergeSheet
             open={publishOpen}

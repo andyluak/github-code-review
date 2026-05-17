@@ -6,6 +6,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent,
 } from "react";
 import {
@@ -16,6 +17,7 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
 import { useDiffViewMode, type DiffViewMode } from "@/hooks/use-diff-view-mode";
+import { isShortcutTextEntryTarget } from "@/hooks/use-keybinding";
 import { compactPath, pathParts } from "@/lib/format";
 import { highlightCodeLine } from "@/lib/syntax-highlight";
 import { SlabButton } from "@/components/ui/slab-button";
@@ -45,6 +47,8 @@ type DiffCanvasProps = {
   fileState: SessionFileState | null;
   jumpTarget: JumpTarget | null;
   supportsReviewComments: boolean;
+  centerMode: "diff" | "map";
+  onCenterModeChange: (mode: "diff" | "map") => void;
   onScrollHandled: () => void;
   onMarkViewed: () => void;
   onMarkReviewed: () => void;
@@ -85,12 +89,15 @@ type SplitDisplayRow = {
 };
 
 const EMPTY_INLINE_COMMENTS: InlineComment[] = [];
+const DIFF_KEY_SCROLL_STEP = 24;
 
 export const DiffCanvas = memo(function DiffCanvas({
   file,
   fileState,
   jumpTarget,
   supportsReviewComments,
+  centerMode,
+  onCenterModeChange,
   onScrollHandled,
   onMarkViewed,
   onMarkReviewed,
@@ -113,7 +120,9 @@ export const DiffCanvas = memo(function DiffCanvas({
     setDraftTarget(null);
     setIsLineSelectionDragging(false);
     lineSelectionDragRef.current = false;
-    scrollViewportRef.current?.scrollTo({ top: 0, left: 0, behavior: "auto" });
+    const viewport = scrollViewportRef.current;
+    viewport?.scrollTo({ top: 0, left: 0, behavior: "instant" });
+    viewport?.focus({ preventScroll: true });
   }, [file?.id]);
 
   useEffect(() => {
@@ -148,7 +157,7 @@ export const DiffCanvas = memo(function DiffCanvas({
       onScrollHandled();
       return;
     }
-    target.scrollIntoView({ block: "center", behavior: "auto" });
+    target.scrollIntoView({ block: "center", behavior: "instant" });
     // Force animation restart in case the class is still attached from a prior jump.
     target.classList.remove("rd-jump-flash");
     void target.offsetWidth;
@@ -189,6 +198,55 @@ export const DiffCanvas = memo(function DiffCanvas({
       buildSplitRows(hunk.lines, file.changeKind, hunkIndex),
     );
   }, [effectiveMode, file, isOneSided]);
+
+  const handleDiffViewportKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLDivElement>) => {
+      if (
+        event.defaultPrevented ||
+        event.metaKey ||
+        event.ctrlKey ||
+        event.altKey ||
+        event.shiftKey ||
+        isShortcutTextEntryTarget(event.target)
+      ) {
+        return;
+      }
+
+      const viewport = event.currentTarget;
+      const pageStep = Math.max(DIFF_KEY_SCROLL_STEP, viewport.clientHeight - 48);
+      let nextTop: number | null = null;
+
+      switch (event.key) {
+        case "ArrowDown":
+          nextTop = viewport.scrollTop + DIFF_KEY_SCROLL_STEP;
+          break;
+        case "ArrowUp":
+          nextTop = viewport.scrollTop - DIFF_KEY_SCROLL_STEP;
+          break;
+        case "PageDown":
+          nextTop = viewport.scrollTop + pageStep;
+          break;
+        case "PageUp":
+          nextTop = viewport.scrollTop - pageStep;
+          break;
+        case "Home":
+          nextTop = 0;
+          break;
+        case "End":
+          nextTop = viewport.scrollHeight;
+          break;
+        default:
+          return;
+      }
+
+      event.preventDefault();
+      viewport.scrollTop = Math.max(
+        0,
+        Math.min(nextTop, viewport.scrollHeight - viewport.clientHeight),
+      );
+    },
+    [],
+  );
 
   function openInlineComposer(anchor: LineAnchor, extendSelection: boolean) {
     setDraftTarget((current) => {
@@ -250,14 +308,36 @@ export const DiffCanvas = memo(function DiffCanvas({
 
   if (!file) {
     return (
-      <section className="grid h-full place-items-center bg-[var(--rd-ink)]">
-        <div className="text-center">
-          <FileDiff className="mx-auto size-10 text-[var(--rd-pencil)]" />
-          <div className="mt-4 rd-display-italic text-[16px] text-[var(--rd-cream-2)]">
-            No file selected
-          </div>
-          <div className="mt-1 font-mono text-[11px] text-[var(--rd-pencil)]">
-            Pick a file from the review queue.
+      <section className="flex h-full min-h-0 flex-col bg-[var(--rd-ink)]">
+        <div className="flex shrink-0 items-stretch border-b border-[var(--rd-hair)] bg-black/15 pl-6 pr-2">
+          <SlabToggleGroup aria-label="Center pane view mode">
+            <SlabButton
+              variant={centerMode === "diff" ? "active" : "default"}
+              onClick={() => onCenterModeChange("diff")}
+              aria-pressed={centerMode === "diff"}
+              aria-label="Diff view"
+            >
+              diff
+            </SlabButton>
+            <SlabButton
+              variant={centerMode === "map" ? "active" : "default"}
+              onClick={() => onCenterModeChange("map")}
+              aria-pressed={centerMode === "map"}
+              aria-label="Review map view"
+            >
+              map
+            </SlabButton>
+          </SlabToggleGroup>
+        </div>
+        <div className="grid flex-1 place-items-center">
+          <div className="text-center">
+            <FileDiff className="mx-auto size-10 text-[var(--rd-pencil)]" />
+            <div className="mt-4 font-voice text-[15px] text-[var(--rd-cream-2)]">
+              no file selected
+            </div>
+            <div className="mt-1 font-mono text-[11px] text-[var(--rd-pencil)]">
+              Pick a file from the review queue.
+            </div>
           </div>
         </div>
       </section>
@@ -273,12 +353,12 @@ export const DiffCanvas = memo(function DiffCanvas({
   return (
     <section className="flex h-full min-h-0 flex-col bg-[var(--rd-ink)]">
       {/* Identity block */}
-      <div className="shrink-0 px-6 pt-5 pb-4 bg-[var(--rd-ink)]">
-        <h2 className="truncate font-mono text-[17px] font-medium tracking-[-0.005em] text-[var(--rd-cream)]" title={file.path}>
+      <div className="shrink-0 px-6 pt-3 pb-2.5 bg-[var(--rd-ink)]">
+        <h2 className="truncate font-mono text-[13px] font-medium tracking-[-0.005em] text-[var(--rd-cream)]" title={file.path}>
           {displayPath.fileName}
         </h2>
-        <div className="mt-1.5 flex items-baseline gap-2.5 flex-wrap font-mono text-[11.5px] text-[var(--rd-pencil)]">
-          <span className="font-voice font-medium text-[12px] lowercase tracking-[0.01em] text-[var(--rd-vermillion-2)]">
+        <div className="mt-1 flex items-baseline gap-2 flex-wrap font-mono text-[10.5px] text-[var(--rd-pencil)]">
+          <span className="font-voice font-medium text-[11px] lowercase tracking-[0.01em] text-[var(--rd-vermillion-2)]">
             {file.changeKind}
           </span>
           <span className="text-[var(--rd-hair-3)]" aria-hidden>·</span>
@@ -304,6 +384,27 @@ export const DiffCanvas = memo(function DiffCanvas({
 
       {/* Toolbar */}
       <div className="flex shrink-0 items-stretch border-y border-[var(--rd-hair)] bg-black/15 pl-6 pr-2">
+        <SlabToggleGroup aria-label="Center pane view mode">
+          <SlabButton
+            variant={centerMode === "diff" ? "active" : "default"}
+            onClick={() => onCenterModeChange("diff")}
+            aria-pressed={centerMode === "diff"}
+            aria-label="Diff view"
+          >
+            diff
+          </SlabButton>
+          <SlabButton
+            variant={centerMode === "map" ? "active" : "default"}
+            onClick={() => onCenterModeChange("map")}
+            aria-pressed={centerMode === "map"}
+            aria-label="Review map view"
+          >
+            map
+          </SlabButton>
+        </SlabToggleGroup>
+
+        <span className="self-stretch w-px bg-[var(--rd-hair)]" aria-hidden />
+
         <SlabToggleGroup aria-label="Diff view mode">
           <SlabButton
             variant={effectiveMode === "split" ? "active" : "default"}
@@ -360,7 +461,17 @@ export const DiffCanvas = memo(function DiffCanvas({
         </SlabButton>
       </div>
 
-      <ScrollArea className="min-h-0 flex-1" viewportRef={scrollViewportRef}>
+      <ScrollArea
+        className="min-h-0 flex-1"
+        viewportRef={scrollViewportRef}
+        viewportProps={{
+          "aria-label": `Diff for ${file.path}`,
+          onKeyDown: handleDiffViewportKeyDown,
+          role: "region",
+          tabIndex: 0,
+          style: { overscrollBehavior: "contain", scrollBehavior: "auto" },
+        }}
+      >
         <div className="min-w-0 px-4 py-4" ref={diffContainerRef}>
           <div className="overflow-hidden rounded-md bg-[var(--rd-ink-2)]">
             {file.hunks.map((hunk, hunkIndex) => (
@@ -514,6 +625,8 @@ function areDiffCanvasPropsEqual(
     previous.file === next.file &&
     previous.jumpTarget === next.jumpTarget &&
     previous.supportsReviewComments === next.supportsReviewComments &&
+    previous.centerMode === next.centerMode &&
+    previous.onCenterModeChange === next.onCenterModeChange &&
     effectiveFileStatus(previous) === effectiveFileStatus(next) &&
     sameInlineComments(previous.fileState, next.fileState) &&
     previous.onScrollHandled === next.onScrollHandled &&

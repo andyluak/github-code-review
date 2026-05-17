@@ -11,6 +11,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "review-desk": "node ./bin/review-desk.mjs",
+    "test:shortcuts": "node ./bin/test-shortcuts.mjs",
     "perf:review-rail": "node ./bin/perf-review-rail.mjs",
     "tauri": "tauri",
     "desktop": "tauri dev",
