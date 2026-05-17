@@ -1,7 +1,12 @@
 import { useMemo, useState } from "react";
 import { compactPath } from "@/lib/format";
+import { normalizeThreadReplyMap } from "@/lib/thread-reply-drafts";
 import { MarkdownPreview } from "@/components/review/MarkdownView";
-import type { ReviewSession, ReviewWorkspaceState } from "@/types/review";
+import type {
+  InlineComment,
+  ReviewSession,
+  ReviewWorkspaceState,
+} from "@/types/review";
 
 type DraftKind = "all" | "inline" | "replies" | "private";
 
@@ -21,6 +26,7 @@ type DraftEntry =
       fileId: string;
       filePath: string;
       threadId: string;
+      draftId: string;
       body: string;
     }
   | {
@@ -34,7 +40,7 @@ type DraftEntry =
 export type DraftJumpTarget =
   | { fileId: string; diffPosition: number }
   | { fileId: string; expandSection: "private" }
-  | { fileId: string; threadId: string };
+  | { fileId: string; threadId: string; draftId?: string };
 
 type Props = {
   session: ReviewSession;
@@ -264,25 +270,38 @@ function collectDrafts(
         fileId: file.id,
         filePath: file.path,
         diffPosition: comment.endDiffPosition,
-        lineLabel: comment.endLine
-          ? `L${comment.endLine}`
-          : `pos ${comment.endDiffPosition}`,
+        lineLabel: inlineCommentLineLabel(comment),
         body: comment.body,
       });
     }
-    for (const [threadId, body] of Object.entries(fs.threadReplies ?? {})) {
-      if (!body.trim()) continue;
-      out.push({
-        kind: "reply",
-        key: `${file.id}-reply-${threadId}`,
-        fileId: file.id,
-        filePath: file.path,
-        threadId,
-        body,
-      });
+    for (const [threadId, drafts] of Object.entries(
+      normalizeThreadReplyMap(fs.threadReplies),
+    )) {
+      for (const draft of drafts) {
+        if (!draft.body.trim()) continue;
+        out.push({
+          kind: "reply",
+          key: `${file.id}-reply-${threadId}-${draft.id}`,
+          fileId: file.id,
+          filePath: file.path,
+          threadId,
+          draftId: draft.id,
+          body: draft.body,
+        });
+      }
     }
   }
   return out;
+}
+
+function inlineCommentLineLabel(comment: InlineComment): string {
+  if (comment.startLine && comment.endLine && comment.startLine !== comment.endLine) {
+    return `L${comment.startLine}-L${comment.endLine}`;
+  }
+  if (comment.endLine || comment.startLine) {
+    return `L${comment.endLine ?? comment.startLine}`;
+  }
+  return `pos ${comment.endDiffPosition}`;
 }
 
 function countByKind(entries: DraftEntry[]) {
@@ -330,7 +349,7 @@ function entryToJumpTarget(entry: DraftEntry): DraftJumpTarget {
     return { fileId: entry.fileId, diffPosition: entry.diffPosition };
   }
   if (entry.kind === "reply") {
-    return { fileId: entry.fileId, threadId: entry.threadId };
+    return { fileId: entry.fileId, threadId: entry.threadId, draftId: entry.draftId };
   }
   return { fileId: entry.fileId, expandSection: "private" };
 }

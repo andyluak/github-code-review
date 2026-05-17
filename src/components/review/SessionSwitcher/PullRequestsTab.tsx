@@ -8,6 +8,7 @@ import type {
   ReviewHistoryItem,
   ReviewWorkspaceState,
 } from "@/types/review";
+import { hasThreadReplyDrafts } from "@/lib/thread-reply-drafts";
 import { PRRow } from "./PRRow";
 
 type Props = {
@@ -33,6 +34,7 @@ function partition(
   const assignedOnly = all.filter(
     (pr) => pr.isAssignedToViewer && !pr.isReviewRequestedFromViewer,
   );
+  const authoredOnly = all.filter((pr) => pr.inboxReason === "AUTHORED");
   const recent: GhPullRequestSummary[] = [];
   const seen = new Set<number>(all.map((pr) => pr.number));
   for (const item of history) {
@@ -46,6 +48,7 @@ function partition(
   return [
     { title: "For you · review requested", rows: reviewRequested },
     { title: "Assigned to me", rows: assignedOnly },
+    { title: "Authored by me", rows: authoredOnly },
     { title: "Recently reviewed", rows: recent },
   ];
 }
@@ -127,11 +130,7 @@ export function PullRequestsTab(props: Props) {
                 (fs?.inlineComments?.some(
                   (c) => c.visibility === "review",
                 ) ?? false) ||
-                (fs?.threadReplies
-                  ? Object.values(fs.threadReplies).some(
-                      (reply) => reply.trim().length > 0,
-                    )
-                  : false),
+                hasThreadReplyDrafts(fs?.threadReplies),
             )
           : false;
         out.push({ kind: "row", pr, rowIndex, hasDraft });
@@ -154,7 +153,7 @@ export function PullRequestsTab(props: Props) {
       <div className="flex min-h-0 flex-1 items-center justify-center px-5 text-center font-mono text-[11px] leading-snug text-[var(--rd-pencil)]">
         {searchQuery.trim()
           ? "No matching pull requests."
-          : "No assigned, review-requested, or recently reviewed pull requests for this repo."}
+          : "No assigned, review-requested, authored, or recently reviewed pull requests for this repo."}
       </div>
     );
   }

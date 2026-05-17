@@ -5,6 +5,8 @@ import {
   fingerprintInline,
   fingerprintThreadReply,
 } from "@/lib/fingerprint";
+import { normalizeThreadReplyMap } from "@/lib/thread-reply-drafts";
+import { threadCommentAuthorLabel } from "@/lib/github-labels";
 import {
   publishPullRequestReview,
   mergePullRequest,
@@ -84,11 +86,19 @@ export function PublishMergeSheet(props: Props) {
     return out;
   }, [workspaceState]);
 
-  const threadReplyDrafts = useMemo<{ threadId: string; body: string }[]>(() => {
-    const out: { threadId: string; body: string }[] = [];
+  const threadReplyDrafts = useMemo<
+    { threadId: string; draftId: string; body: string }[]
+  >(() => {
+    const out: { threadId: string; draftId: string; body: string }[] = [];
     for (const fs of Object.values(workspaceState)) {
-      for (const [threadId, replyBody] of Object.entries(fs?.threadReplies ?? {})) {
-        if (replyBody.trim()) out.push({ threadId, body: replyBody });
+      for (const [threadId, drafts] of Object.entries(
+        normalizeThreadReplyMap(fs?.threadReplies),
+      )) {
+        for (const draft of drafts) {
+          if (draft.body.trim()) {
+            out.push({ threadId, draftId: draft.id, body: draft.body });
+          }
+        }
       }
     }
     return out;
@@ -101,16 +111,16 @@ export function PublishMergeSheet(props: Props) {
         kind: "inline",
         key: c.id,
         path: c.path,
-        line: c.endLine ?? c.startLine ?? null,
+        lineLabel: inlineDraftLineLabel(c),
         body: c.body,
       });
     }
     for (const r of threadReplyDrafts) {
       rows.push({
         kind: "reply",
-        key: `reply-${r.threadId}`,
+        key: `reply-${r.threadId}-${r.draftId}`,
         path: descriptorForThread(prContext, r.threadId),
-        line: null,
+        lineLabel: null,
         body: r.body,
       });
     }
@@ -158,6 +168,7 @@ export function PublishMergeSheet(props: Props) {
             path: c.path,
             line: c.endLine ?? c.startLine ?? 0,
             side: c.side === "old" ? "LEFT" : "RIGHT",
+            startLine: c.startLine ?? null,
             body: c.body,
           },
           prNumber,
@@ -166,11 +177,13 @@ export function PublishMergeSheet(props: Props) {
         path: c.path,
         line: c.endLine ?? c.startLine ?? 0,
         side: c.side === "old" ? "LEFT" : "RIGHT",
+        startLine: c.startLine ?? null,
+        startSide: c.side === "old" ? "LEFT" : "RIGHT",
         body: c.body,
       }));
 
     const threadReplies: PublishThreadReply[] = threadReplyDrafts
-      .filter((r) => !dropped.has(`reply-${r.threadId}`))
+      .filter((r) => !dropped.has(`reply-${r.threadId}-${r.draftId}`))
       .map((r) => ({
         fingerprint: fingerprintThreadReply(r.threadId, r.body, prNumber, headSha),
         threadId: r.threadId,
@@ -194,6 +207,14 @@ export function PublishMergeSheet(props: Props) {
         threadReplies,
       });
       onPublished(result);
+
+      if (result.failedFingerprints.length > 0) {
+        setError(
+          `${result.failedFingerprints.length} draft${result.failedFingerprints.length === 1 ? "" : "s"} failed to publish. Successful drafts were cleared; retry the remaining drafts.`,
+        );
+        setStage("compose");
+        return;
+      }
 
       if (intent !== "approve") {
         onClose();
@@ -358,7 +379,7 @@ export function PublishMergeSheet(props: Props) {
                   ].join(" ")}
                 >
                   <span className="rounded bg-[var(--rd-ink-3)] px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-[0.1em] text-[var(--rd-cream-2)]">
-                    {row.kind === "inline" && row.line !== null ? `L${row.line}` : row.kind.toUpperCase()}
+                    {row.lineLabel ?? row.kind.toUpperCase()}
                   </span>
                   <div className="min-w-0">
                     <div className="truncate font-mono text-[10px] text-[var(--rd-pencil)]">
@@ -606,9 +627,17 @@ type DraftRow = {
   kind: "inline" | "reply";
   key: string;
   path: string;
-  line: number | null;
+  lineLabel: string | null;
   body: string;
 };
+
+function inlineDraftLineLabel(comment: InlineComment): string | null {
+  if (comment.startLine && comment.endLine && comment.startLine !== comment.endLine) {
+    return `L${comment.startLine}-${comment.endLine}`;
+  }
+  const line = comment.endLine ?? comment.startLine;
+  return line ? `L${line}` : null;
+}
 
 function firstPresent(...values: Array<string | null | undefined>): string | null {
   for (const v of values) {
@@ -622,7 +651,7 @@ function descriptorForThread(prContext: PullRequestContext | null, threadId: str
   if (!prContext) return `thread ${threadId.slice(0, 8)}`;
   const thread = prContext.reviewThreads.find((t) => t.id === threadId);
   if (!thread) return `thread ${threadId.slice(0, 8)}`;
-  const author = thread.comments[0]?.author ?? "thread";
+  const author = threadCommentAuthorLabel(thread.comments[0], "thread");
   return `thread on ${thread.path} · replies to ${author}`;
 }
 

@@ -43,6 +43,30 @@ export type OpenReviewFileRequest = {
   filePath: string;
 };
 
+export type LoadReviewAssetPreviewRequest = {
+  repoPath: string;
+  filePath: string;
+  oldPath?: string | null;
+  changeKind: ChangeKind;
+  diffTarget: string;
+};
+
+export type ReviewAssetSide = {
+  label: string;
+  path: string;
+  dataUrl: string;
+  mimeType: string;
+  byteSize: number;
+};
+
+export type ReviewAssetPreview = {
+  filePath: string;
+  mimeType: string;
+  old: ReviewAssetSide | null;
+  new: ReviewAssetSide | null;
+  message?: string | null;
+};
+
 export type LoadReviewWorkspaceStateRequest = {
   repoPath: string;
   sessionId: string;
@@ -357,12 +381,21 @@ export type InlineComment = {
   updatedAt: string;
 };
 
+export type ThreadReplyDraft = {
+  id: string;
+  body: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ThreadReplyDraftMap = Record<string, ThreadReplyDraft[]>;
+
 export type SessionFileState = {
   status: ViewedStatus;
   lastPatchHash?: string;
   privateNote: string;
   inlineComments: InlineComment[];
-  threadReplies?: Record<string, string>;
+  threadReplies?: ThreadReplyDraftMap;
 };
 
 export type ReviewWorkspaceState = Record<string, SessionFileState>;

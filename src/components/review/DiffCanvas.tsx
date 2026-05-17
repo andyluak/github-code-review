@@ -25,12 +25,20 @@ import { SlabToggleGroup } from "@/components/ui/slab-toggle-group";
 import { MarkdownView } from "@/components/review/MarkdownView";
 import { ConversationBubble } from "@/components/review/ConversationBubble";
 import { ConversationThread } from "@/components/review/ConversationThread";
+import { loadReviewAssetPreview } from "@/lib/review-session";
+import {
+  hasThreadReplyDrafts,
+  normalizeThreadReplyDrafts,
+  normalizeThreadReplyMap,
+} from "@/lib/thread-reply-drafts";
 import type { ReviewThread } from "@/types/github";
 import type {
   DiffLine,
   InlineComment,
   InlineCommentSide,
   InlineCommentVisibility,
+  ReviewAssetPreview,
+  ReviewAssetSide,
   ReviewFile,
   SessionFileState,
 } from "@/types/review";
@@ -43,6 +51,8 @@ type JumpTarget = {
 };
 
 type DiffCanvasProps = {
+  repoRoot: string | null;
+  diffTarget: string | null;
   file: ReviewFile | null;
   fileState: SessionFileState | null;
   jumpTarget: JumpTarget | null;
@@ -59,6 +69,7 @@ type DiffCanvasProps = {
   expandedThreadId?: string | null;
   onExpandThread?: (id: string | null) => void;
   onReplyThread?: (fileId: string, threadId: string, body: string) => void;
+  onDeleteThreadReply?: (fileId: string, threadId: string, draftId?: string) => void;
 };
 
 type LineAnchor = {
@@ -92,6 +103,8 @@ const EMPTY_INLINE_COMMENTS: InlineComment[] = [];
 const DIFF_KEY_SCROLL_STEP = 24;
 
 export const DiffCanvas = memo(function DiffCanvas({
+  repoRoot,
+  diffTarget,
   file,
   fileState,
   jumpTarget,
@@ -108,13 +121,26 @@ export const DiffCanvas = memo(function DiffCanvas({
   expandedThreadId,
   onExpandThread,
   onReplyThread,
+  onDeleteThreadReply,
 }: DiffCanvasProps) {
   const [viewMode, setViewMode] = useDiffViewMode();
   const [draftTarget, setDraftTarget] = useState<CommentTarget | null>(null);
   const [isLineSelectionDragging, setIsLineSelectionDragging] = useState(false);
+  const [assetPreview, setAssetPreview] = useState<ReviewAssetPreview | null>(null);
+  const [assetPreviewStatus, setAssetPreviewStatus] = useState<
+    "idle" | "loading" | "error"
+  >("idle");
+  const [assetPreviewError, setAssetPreviewError] = useState<string | null>(null);
   const diffContainerRef = useRef<HTMLDivElement | null>(null);
   const scrollViewportRef = useRef<HTMLDivElement | null>(null);
   const lineSelectionDragRef = useRef(false);
+  const shouldPreviewImageAsset = Boolean(
+    file &&
+      repoRoot &&
+      diffTarget &&
+      file.hunks.length === 0 &&
+      isPreviewableImagePath(file.path),
+  );
 
   useEffect(() => {
     setDraftTarget(null);
@@ -171,6 +197,42 @@ export const DiffCanvas = memo(function DiffCanvas({
       target.classList.remove("rd-jump-flash");
     };
   }, [jumpTarget, file, onScrollHandled]);
+
+  useEffect(() => {
+    if (!file || !repoRoot || !diffTarget || !shouldPreviewImageAsset) {
+      setAssetPreview(null);
+      setAssetPreviewStatus("idle");
+      setAssetPreviewError(null);
+      return;
+    }
+
+    let cancelled = false;
+    setAssetPreview(null);
+    setAssetPreviewStatus("loading");
+    setAssetPreviewError(null);
+    void loadReviewAssetPreview({
+      repoPath: repoRoot,
+      filePath: file.path,
+      oldPath: file.oldPath ?? null,
+      changeKind: file.changeKind,
+      diffTarget,
+    })
+      .then((preview) => {
+        if (cancelled) return;
+        setAssetPreview(preview);
+        setAssetPreviewStatus("idle");
+      })
+      .catch((caught) => {
+        if (cancelled) return;
+        setAssetPreview(null);
+        setAssetPreviewStatus("error");
+        setAssetPreviewError(caught instanceof Error ? caught.message : String(caught));
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [diffTarget, file, repoRoot, shouldPreviewImageAsset]);
 
   const isOneSided = file
     ? file.changeKind === "added" || file.changeKind === "deleted"
@@ -474,7 +536,15 @@ export const DiffCanvas = memo(function DiffCanvas({
       >
         <div className="min-w-0 px-4 py-4" ref={diffContainerRef}>
           <div className="overflow-hidden rounded-md bg-[var(--rd-ink-2)]">
-            {file.hunks.map((hunk, hunkIndex) => (
+            {file.hunks.length === 0 ? (
+              <ImageAssetDiff
+                file={file}
+                preview={assetPreview}
+                status={assetPreviewStatus}
+                error={assetPreviewError}
+                canPreview={shouldPreviewImageAsset}
+              />
+            ) : file.hunks.map((hunk, hunkIndex) => (
               <div key={`${file.id}-${hunk.header}`}>
                 <div className="flex items-center gap-3 border-y border-[var(--rd-hair)] bg-[var(--rd-ink)] px-4 py-1.5">
                   <span className="h-px flex-1 bg-[var(--rd-hair-2)]" aria-hidden />
@@ -526,15 +596,24 @@ export const DiffCanvas = memo(function DiffCanvas({
                               <ConversationThread
                                 key={t.id}
                                 thread={t}
+                                localDraftReplies={normalizeThreadReplyDrafts(
+                                  fileState?.threadReplies?.[t.id],
+                                )}
                                 onCollapse={() => onExpandThread?.(null)}
                                 onReply={(id, body) =>
                                   onReplyThread?.(file.id, id, body)
+                                }
+                                onDeleteDraftReply={(id, draftId) =>
+                                  onDeleteThreadReply?.(file.id, id, draftId)
                                 }
                               />
                             ) : (
                               <ConversationBubble
                                 key={t.id}
                                 thread={t}
+                                hasDraftReply={hasThreadReplyDrafts({
+                                  [t.id]: fileState?.threadReplies?.[t.id],
+                                })}
                                 onExpand={(id) => onExpandThread?.(id)}
                               />
                             ),
@@ -592,15 +671,24 @@ export const DiffCanvas = memo(function DiffCanvas({
                               <ConversationThread
                                 key={t.id}
                                 thread={t}
+                                localDraftReplies={normalizeThreadReplyDrafts(
+                                  fileState?.threadReplies?.[t.id],
+                                )}
                                 onCollapse={() => onExpandThread?.(null)}
                                 onReply={(id, body) =>
                                   onReplyThread?.(file.id, id, body)
+                                }
+                                onDeleteDraftReply={(id, draftId) =>
+                                  onDeleteThreadReply?.(file.id, id, draftId)
                                 }
                               />
                             ) : (
                               <ConversationBubble
                                 key={t.id}
                                 thread={t}
+                                hasDraftReply={hasThreadReplyDrafts({
+                                  [t.id]: fileState?.threadReplies?.[t.id],
+                                })}
                                 onExpand={(id) => onExpandThread?.(id)}
                               />
                             ),
@@ -622,6 +710,8 @@ function areDiffCanvasPropsEqual(
   next: DiffCanvasProps,
 ) {
   return (
+    previous.repoRoot === next.repoRoot &&
+    previous.diffTarget === next.diffTarget &&
     previous.file === next.file &&
     previous.jumpTarget === next.jumpTarget &&
     previous.supportsReviewComments === next.supportsReviewComments &&
@@ -629,6 +719,7 @@ function areDiffCanvasPropsEqual(
     previous.onCenterModeChange === next.onCenterModeChange &&
     effectiveFileStatus(previous) === effectiveFileStatus(next) &&
     sameInlineComments(previous.fileState, next.fileState) &&
+    sameThreadReplies(previous.fileState, next.fileState) &&
     previous.onScrollHandled === next.onScrollHandled &&
     previous.onMarkViewed === next.onMarkViewed &&
     previous.onMarkReviewed === next.onMarkReviewed &&
@@ -638,12 +729,141 @@ function areDiffCanvasPropsEqual(
     previous.threads === next.threads &&
     previous.expandedThreadId === next.expandedThreadId &&
     previous.onExpandThread === next.onExpandThread &&
-    previous.onReplyThread === next.onReplyThread
+    previous.onReplyThread === next.onReplyThread &&
+    previous.onDeleteThreadReply === next.onDeleteThreadReply
   );
 }
 
 function effectiveFileStatus(props: DiffCanvasProps) {
   return props.fileState?.status ?? props.file?.viewedStatus ?? "unseen";
+}
+
+function ImageAssetDiff({
+  file,
+  preview,
+  status,
+  error,
+  canPreview,
+}: {
+  file: ReviewFile;
+  preview: ReviewAssetPreview | null;
+  status: "idle" | "loading" | "error";
+  error: string | null;
+  canPreview: boolean;
+}) {
+  if (!canPreview) {
+    return (
+      <div className="grid min-h-[220px] place-items-center border border-[var(--rd-hair)] px-6 py-10 text-center">
+        <div>
+          <FileDiff className="mx-auto size-8 text-[var(--rd-pencil)]" />
+          <div className="mt-3 font-mono text-[12px] text-[var(--rd-cream-2)]">
+            Binary file preview is not available for this file type.
+          </div>
+          <div className="mt-1 font-mono text-[10px] text-[var(--rd-pencil)]">
+            {file.path}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (status === "loading") {
+    return (
+      <div className="grid min-h-[220px] place-items-center border border-[var(--rd-hair)] px-6 py-10 font-mono text-[12px] text-[var(--rd-pencil)]">
+        Loading image preview...
+      </div>
+    );
+  }
+
+  if (status === "error") {
+    return (
+      <div className="grid min-h-[220px] place-items-center border border-[var(--rd-hair)] px-6 py-10 text-center">
+        <div>
+          <div className="font-mono text-[12px] text-[var(--rd-del)]">
+            Failed to load image preview.
+          </div>
+          <div className="mt-2 max-w-lg font-mono text-[10px] text-[var(--rd-pencil)]">
+            {error}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!preview || (!preview.old && !preview.new)) {
+    return (
+      <div className="grid min-h-[220px] place-items-center border border-[var(--rd-hair)] px-6 py-10 text-center">
+        <div>
+          <div className="font-mono text-[12px] text-[var(--rd-cream-2)]">
+            No image data could be resolved for this file.
+          </div>
+          <div className="mt-1 font-mono text-[10px] text-[var(--rd-pencil)]">
+            {preview?.message ?? file.path}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const sides = [preview.old, preview.new].filter(Boolean) as ReviewAssetSide[];
+  return (
+    <div className="border border-[var(--rd-hair)] bg-[var(--rd-ink)]">
+      <div className="flex items-center justify-between border-b border-[var(--rd-hair)] px-4 py-2 font-mono text-[10px] text-[var(--rd-pencil)]">
+        <span>{preview.mimeType}</span>
+        <span>{sides.length === 2 ? "before / after" : file.changeKind}</span>
+      </div>
+      <div
+        className={[
+          "grid gap-0",
+          sides.length === 2 ? "md:grid-cols-2" : "grid-cols-1",
+        ].join(" ")}
+      >
+        {preview.old ? <ImageSidePreview side={preview.old} /> : null}
+        {preview.new ? <ImageSidePreview side={preview.new} /> : null}
+      </div>
+    </div>
+  );
+}
+
+function ImageSidePreview({ side }: { side: ReviewAssetSide }) {
+  return (
+    <figure className="border-b border-[var(--rd-hair)] last:border-b-0 md:border-b-0 md:border-r md:last:border-r-0">
+      <figcaption className="flex items-center justify-between border-b border-[var(--rd-hair)] bg-[var(--rd-ink-2)] px-4 py-2 font-mono text-[10px]">
+        <span className="uppercase tracking-[0.14em] text-[var(--rd-vermillion-2)]">
+          {side.label}
+        </span>
+        <span className="text-[var(--rd-pencil)]">{formatBytes(side.byteSize)}</span>
+      </figcaption>
+      <div className="grid min-h-[280px] place-items-center overflow-auto p-6">
+        <div
+          className="max-w-full rounded border border-[var(--rd-hair)] p-4"
+          style={{
+            backgroundColor: "rgba(255,255,255,0.04)",
+            backgroundImage:
+              "linear-gradient(45deg, rgba(255,255,255,0.08) 25%, transparent 25%), linear-gradient(-45deg, rgba(255,255,255,0.08) 25%, transparent 25%), linear-gradient(45deg, transparent 75%, rgba(255,255,255,0.08) 75%), linear-gradient(-45deg, transparent 75%, rgba(255,255,255,0.08) 75%)",
+            backgroundPosition: "0 0, 0 8px, 8px -8px, -8px 0px",
+            backgroundSize: "16px 16px",
+          }}
+        >
+          <img
+            src={side.dataUrl}
+            alt={`${side.label} preview of ${side.path}`}
+            className="block max-h-[520px] max-w-full object-contain [image-rendering:auto]"
+          />
+        </div>
+      </div>
+    </figure>
+  );
+}
+
+function isPreviewableImagePath(path: string) {
+  return /\.(png|jpe?g|gif|webp|bmp|ico|svg)$/i.test(path);
+}
+
+function formatBytes(value: number) {
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function sameInlineComments(
@@ -656,6 +876,39 @@ function sameInlineComments(
     return true;
   }
   return (previousComments?.length ?? 0) === 0 && (nextComments?.length ?? 0) === 0;
+}
+
+function sameThreadReplies(
+  previous: SessionFileState | null,
+  next: SessionFileState | null,
+) {
+  if (previous?.threadReplies === next?.threadReplies) {
+    return true;
+  }
+
+  const previousReplies = normalizeThreadReplyMap(previous?.threadReplies);
+  const nextReplies = normalizeThreadReplyMap(next?.threadReplies);
+  const previousKeys = Object.keys(previousReplies ?? {});
+  const nextKeys = Object.keys(nextReplies ?? {});
+  if (previousKeys.length !== nextKeys.length) {
+    return false;
+  }
+
+  return previousKeys.every((key) => {
+    const previousDrafts = previousReplies[key] ?? [];
+    const nextDrafts = nextReplies[key] ?? [];
+    if (previousDrafts.length !== nextDrafts.length) {
+      return false;
+    }
+    return previousDrafts.every((draft, index) => {
+      const nextDraft = nextDrafts[index];
+      return (
+        draft.id === nextDraft?.id &&
+        draft.body === nextDraft?.body &&
+        draft.updatedAt === nextDraft?.updatedAt
+      );
+    });
+  });
 }
 
 function groupCommentsByPosition(inlineComments: InlineComment[]) {

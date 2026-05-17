@@ -1,4 +1,5 @@
 import type { PullRequestContext, ReviewThread } from "@/types/github";
+import { normalizeThreadReplyMap } from "@/lib/thread-reply-drafts";
 import type {
   InlineComment,
   ReviewFile,
@@ -62,6 +63,7 @@ export type HandoffNote = {
   inlineComments: InlineComment[];
   threadReplies: Array<{
     threadId: string;
+    draftId: string;
     path: string | null;
     line: number | null;
     body: string;
@@ -87,6 +89,7 @@ export type HandoffPullRequest = {
   threads: Array<{
     id: string;
     path: string;
+    startLine: number | null;
     line: number | null;
     isResolved: boolean;
     isOutdated: boolean;
@@ -230,7 +233,7 @@ export function renderHandoffMarkdown(bundle: HandoffBundle): string {
       lines.push("", "### Review Threads", "");
       for (const thread of bundle.pr.threads) {
         const state = thread.isResolved ? "resolved" : "unresolved";
-        lines.push(`- ${thread.path}${thread.line ? `:L${thread.line}` : ""} (${state})`);
+        lines.push(`- ${thread.path}:${threadLineLabel(thread)} (${state})`);
         for (const comment of thread.comments) {
           lines.push(`  - ${comment.author}: ${singleLine(comment.body)}`);
         }
@@ -312,17 +315,17 @@ function noteForFile(
     privateNote: fileState?.privateNote ?? "",
     publishableDraft: fileState?.publishableDraft ?? "",
     inlineComments: fileState?.inlineComments ?? [],
-    threadReplies: Object.entries(fileState?.threadReplies ?? {})
-      .filter(([, body]) => body.trim())
-      .map(([threadId, body]) => {
+    threadReplies: Object.entries(normalizeThreadReplyMap(fileState?.threadReplies))
+      .flatMap(([threadId, drafts]) => drafts.filter((draft) => draft.body.trim()).map((draft) => {
         const thread = threadById.get(threadId);
         return {
           threadId,
+          draftId: draft.id,
           path: thread?.path ?? null,
           line: thread?.line ?? thread?.originalLine ?? null,
-          body,
+          body: draft.body,
         };
-      }),
+      })),
   };
 }
 
@@ -338,6 +341,7 @@ function prForHandoff(
     .map((thread) => ({
       id: thread.id,
       path: thread.path,
+      startLine: thread.startLine ?? null,
       line: thread.line ?? thread.originalLine ?? null,
       isResolved: thread.isResolved,
       isOutdated: thread.isOutdated,
@@ -459,6 +463,16 @@ function lineLabel(comment: InlineComment) {
     return `L${comment.startLine}-L${comment.endLine}`;
   }
   return `L${comment.endLine ?? comment.startLine ?? comment.endDiffPosition}`;
+}
+
+function threadLineLabel(thread: {
+  startLine?: number | null;
+  line?: number | null;
+}) {
+  if (thread.startLine && thread.line && thread.startLine !== thread.line) {
+    return `L${thread.startLine}-L${thread.line}`;
+  }
+  return `L${thread.line ?? thread.startLine ?? "?"}`;
 }
 
 function shortSha(value: string) {

@@ -82,6 +82,36 @@ pub struct OpenReviewFileRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct LoadReviewAssetPreviewRequest {
+    repo_path: String,
+    file_path: String,
+    old_path: Option<String>,
+    change_kind: ChangeKind,
+    diff_target: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewAssetPreview {
+    file_path: String,
+    mime_type: String,
+    old: Option<ReviewAssetSide>,
+    new: Option<ReviewAssetSide>,
+    message: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewAssetSide {
+    label: String,
+    path: String,
+    data_url: String,
+    mime_type: String,
+    byte_size: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LoadReviewWorkspaceStateRequest {
     repo_path: String,
     session_id: String,
@@ -174,7 +204,7 @@ struct AgentNote {
     source: Option<String>,
 }
 
-#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 enum ChangeKind {
     Added,
@@ -500,19 +530,11 @@ fn create_review_session_inner(
     changed.retain(|path| seen_paths.insert(path.path.clone()));
 
     let mut files = Vec::new();
-    let mut excluded_files = Vec::new();
+    let excluded_files = Vec::new();
     let mut included_tracked_paths = Vec::new();
     let mut included_untracked_paths = Vec::new();
 
     for changed_path in &changed {
-        if let Some(reason) = generated_reason(&changed_path.path) {
-            excluded_files.push(ExcludedFile {
-                path: changed_path.path.clone(),
-                reason,
-            });
-            continue;
-        }
-
         match changed_path.source {
             ChangeSource::Tracked => included_tracked_paths.push(changed_path.path.clone()),
             ChangeSource::Untracked => included_untracked_paths.push(changed_path.path.clone()),
@@ -534,19 +556,12 @@ fn create_review_session_inner(
         .collect::<Result<std::collections::HashMap<_, _>, _>>()?;
 
     for changed_path in changed {
-        if generated_reason(&changed_path.path).is_some() {
-            continue;
-        }
-
         let parsed = match changed_path.source {
             ChangeSource::Tracked => tracked_by_path.get(&changed_path.path).cloned(),
             ChangeSource::Untracked => untracked_by_path.get(&changed_path.path).cloned(),
         };
 
         if let Some(parsed) = parsed {
-            if parsed.hunks.is_empty() {
-                continue;
-            }
             files.push(parsed);
         }
     }
@@ -654,6 +669,59 @@ pub fn open_review_file(request: OpenReviewFileRequest) -> Result<(), String> {
             "Failed to open {} in editor: {error}",
             canonical_file.display()
         )
+    })
+}
+
+#[tauri::command]
+pub async fn load_review_asset_preview(
+    request: LoadReviewAssetPreviewRequest,
+) -> Result<ReviewAssetPreview, String> {
+    crate::blocking::run("load_review_asset_preview", move || {
+        load_review_asset_preview_inner(request)
+    })
+    .await
+}
+
+fn load_review_asset_preview_inner(
+    request: LoadReviewAssetPreviewRequest,
+) -> Result<ReviewAssetPreview, String> {
+    let repo_root = repo_root(&request.repo_path)?;
+    let relative_path = safe_relative_review_path(&request.file_path)?;
+    let file_path = relative_path.to_string_lossy().replace('\\', "/");
+    let old_path = request
+        .old_path
+        .as_deref()
+        .map(safe_relative_review_path)
+        .transpose()?
+        .map(|path| path.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_else(|| file_path.clone());
+    let mime_type = image_mime_type(&file_path)
+        .ok_or_else(|| format!("No image preview is available for {}", request.file_path))?
+        .to_string();
+    let (old_source, new_source) = asset_sources(&repo_root, request.diff_target.trim())?;
+
+    let old = if request.change_kind == ChangeKind::Added {
+        None
+    } else {
+        load_asset_side(&repo_root, &old_path, old_source, "before")?
+    };
+    let new = if request.change_kind == ChangeKind::Deleted {
+        None
+    } else {
+        load_asset_side(&repo_root, &file_path, new_source, "after")?
+    };
+    let message = if old.is_none() && new.is_none() {
+        Some("Image data could not be resolved from this checkout.".to_string())
+    } else {
+        None
+    };
+
+    Ok(ReviewAssetPreview {
+        file_path,
+        mime_type,
+        old,
+        new,
+        message,
     })
 }
 
@@ -2356,30 +2424,6 @@ fn parse_patch(patch: &str, fallback_path: &str) -> ReviewFile {
     }
 }
 
-fn generated_reason(path: &str) -> Option<String> {
-    let lower = path.to_ascii_lowercase();
-    let generated_markers = [
-        "node_modules/",
-        "/gen/",
-        "/generated/",
-        "src-tauri/target/",
-        "dist/",
-        "build/",
-        ".lock",
-        ".review-desk/",
-    ];
-    if lower == "pnpm-lock.yaml" || lower == "package-lock.json" || lower == "yarn.lock" {
-        return Some("Lockfile excluded from default review".to_string());
-    }
-    if lower.starts_with("src-tauri/icons/") {
-        return Some("Generated app icon asset".to_string());
-    }
-    generated_markers
-        .iter()
-        .find(|marker| lower.contains(**marker))
-        .map(|marker| format!("Generated path marker: {marker}"))
-}
-
 fn parse_hunk_header(header: &str) -> (usize, usize, usize, usize) {
     let mut parts = header.split_whitespace();
     let _marker = parts.next();
@@ -2492,6 +2536,161 @@ fn content_hash(value: &str) -> String {
     format!("patch-{:x}", hasher.finish())
 }
 
+#[derive(Debug, Clone)]
+enum AssetSource {
+    Git(String),
+    Worktree,
+}
+
+fn asset_sources(
+    repo_root: &Path,
+    diff_target: &str,
+) -> Result<(Option<AssetSource>, Option<AssetSource>), String> {
+    let target = diff_target.trim();
+    if target.is_empty() || !target.contains("..") {
+        let old = if target.is_empty() { "HEAD" } else { target };
+        return Ok((
+            Some(AssetSource::Git(old.to_string())),
+            Some(AssetSource::Worktree),
+        ));
+    }
+
+    if let Some((base, head)) = target.split_once("...") {
+        let merge_base = git_stdout(repo_root, &["merge-base", base, head])?
+            .trim()
+            .to_string();
+        return Ok((
+            Some(AssetSource::Git(merge_base)),
+            Some(AssetSource::Git(head.to_string())),
+        ));
+    }
+
+    if let Some((base, head)) = target.split_once("..") {
+        return Ok((
+            Some(AssetSource::Git(base.to_string())),
+            Some(AssetSource::Git(head.to_string())),
+        ));
+    }
+
+    Ok((
+        Some(AssetSource::Git(target.to_string())),
+        Some(AssetSource::Worktree),
+    ))
+}
+
+fn load_asset_side(
+    repo_root: &Path,
+    path: &str,
+    source: Option<AssetSource>,
+    label: &str,
+) -> Result<Option<ReviewAssetSide>, String> {
+    let Some(source) = source else {
+        return Ok(None);
+    };
+    let Some(mime_type) = image_mime_type(path) else {
+        return Ok(None);
+    };
+    let bytes = match source {
+        AssetSource::Worktree => read_worktree_asset(repo_root, path)?,
+        AssetSource::Git(rev) => read_git_asset(repo_root, &rev, path)?,
+    };
+    let Some(bytes) = bytes else {
+        return Ok(None);
+    };
+    let byte_size = bytes.len();
+    Ok(Some(ReviewAssetSide {
+        label: label.to_string(),
+        path: path.to_string(),
+        data_url: format!("data:{mime_type};base64,{}", base64_encode(&bytes)),
+        mime_type: mime_type.to_string(),
+        byte_size,
+    }))
+}
+
+fn read_worktree_asset(repo_root: &Path, path: &str) -> Result<Option<Vec<u8>>, String> {
+    let relative_path = safe_relative_review_path(path)?;
+    let requested_path = repo_root.join(relative_path);
+    if !requested_path.exists() {
+        return Ok(None);
+    }
+    let canonical_repo = repo_root.canonicalize().map_err(|error| {
+        format!(
+            "Failed to resolve repository path {}: {error}",
+            repo_root.display()
+        )
+    })?;
+    let canonical_file = requested_path.canonicalize().map_err(|error| {
+        format!(
+            "Failed to resolve image path {}: {error}",
+            requested_path.display()
+        )
+    })?;
+    if !canonical_file.starts_with(&canonical_repo) {
+        return Err(format!(
+            "Refusing to preview path outside repository: {path}"
+        ));
+    }
+    fs::read(&canonical_file)
+        .map(Some)
+        .map_err(|error| format!("Failed to read image {}: {error}", canonical_file.display()))
+}
+
+fn read_git_asset(repo_root: &Path, rev: &str, path: &str) -> Result<Option<Vec<u8>>, String> {
+    if rev.trim().is_empty() {
+        return Ok(None);
+    }
+    safe_relative_review_path(path)?;
+    let spec = format!("{}:{}", rev.trim(), path);
+    match git_stdout_bytes(repo_root, &["show", &spec]) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(_) => Ok(None),
+    }
+}
+
+fn image_mime_type(path: &str) -> Option<&'static str> {
+    let extension = Path::new(path)
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    match extension.as_str() {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        "bmp" => Some("image/bmp"),
+        "ico" => Some("image/x-icon"),
+        "svg" => Some("image/svg+xml"),
+        _ => None,
+    }
+}
+
+fn base64_encode(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut encoded = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    let mut index = 0;
+    while index < bytes.len() {
+        let b0 = bytes[index];
+        let b1 = bytes.get(index + 1).copied();
+        let b2 = bytes.get(index + 2).copied();
+        encoded.push(TABLE[(b0 >> 2) as usize] as char);
+        encoded.push(TABLE[(((b0 & 0b0000_0011) << 4) | (b1.unwrap_or(0) >> 4)) as usize] as char);
+        if let Some(b1) = b1 {
+            encoded
+                .push(TABLE[(((b1 & 0b0000_1111) << 2) | (b2.unwrap_or(0) >> 6)) as usize] as char);
+        } else {
+            encoded.push('=');
+        }
+        if let Some(b2) = b2 {
+            encoded.push(TABLE[(b2 & 0b0011_1111) as usize] as char);
+        } else {
+            encoded.push('=');
+        }
+        index += 3;
+    }
+    encoded
+}
+
 fn split_nul(output: &str) -> Vec<String> {
     output
         .split('\0')
@@ -2519,6 +2718,22 @@ fn git_stdout_strings(repo_root: &Path, args: &[String]) -> Result<String, Strin
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn git_stdout_bytes(repo_root: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(args)
+        .output()
+        .map_err(|error| format!("Failed to run git {:?}: {error}", args))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("git {:?} failed: {}", args, stderr.trim()));
+    }
+
+    Ok(output.stdout)
 }
 
 fn command_stdout_with_args(
@@ -2581,6 +2796,42 @@ mod tests {
     }
 
     #[test]
+    fn base64_encode_handles_padding() {
+        assert_eq!(base64_encode(b""), "");
+        assert_eq!(base64_encode(b"a"), "YQ==");
+        assert_eq!(base64_encode(b"ab"), "YWI=");
+        assert_eq!(base64_encode(b"abc"), "YWJj");
+    }
+
+    #[test]
+    fn loads_worktree_image_asset_preview_with_before_and_after() {
+        let repo = temp_repo();
+        fs::create_dir_all(repo.join("icons")).unwrap();
+        fs::write(repo.join("icons/icon.png"), [1_u8, 2, 3]).unwrap();
+        run_git(&repo, &["init"]);
+        run_git(&repo, &["config", "user.email", "review-desk@example.test"]);
+        run_git(&repo, &["config", "user.name", "Review Desk Test"]);
+        run_git(&repo, &["add", "icons/icon.png"]);
+        run_git(&repo, &["commit", "-m", "initial icon"]);
+        fs::write(repo.join("icons/icon.png"), [4_u8, 5, 6]).unwrap();
+
+        let preview = load_review_asset_preview_inner(LoadReviewAssetPreviewRequest {
+            repo_path: repo.display().to_string(),
+            file_path: "icons/icon.png".to_string(),
+            old_path: None,
+            change_kind: ChangeKind::Modified,
+            diff_target: "HEAD".to_string(),
+        })
+        .unwrap();
+
+        assert_eq!(preview.mime_type, "image/png");
+        assert!(preview.old.unwrap().data_url.ends_with("AQID"));
+        assert!(preview.new.unwrap().data_url.ends_with("BAUG"));
+
+        fs::remove_dir_all(repo).unwrap();
+    }
+
+    #[test]
     fn accepts_safe_review_file_paths() {
         assert_eq!(
             safe_relative_review_path("src/components/App.tsx").unwrap(),
@@ -2597,12 +2848,6 @@ mod tests {
         assert!(safe_relative_review_path("../secret.txt").is_err());
         assert!(safe_relative_review_path("/tmp/secret.txt").is_err());
         assert!(safe_relative_review_path("").is_err());
-    }
-
-    #[test]
-    fn excludes_generated_paths() {
-        assert!(generated_reason("ui/staging/client/gen/schema.ts").is_some());
-        assert!(generated_reason("src/components/review/DiffCanvas.tsx").is_none());
     }
 
     #[test]
@@ -2806,6 +3051,16 @@ mod tests {
                     "source": "codex",
                     "note": "Check the new public function."
                 }
+            ],
+            "excludedPaths": [
+                {
+                    "path": "pnpm-lock.yaml",
+                    "reason": "Agent excluded lockfile noise."
+                },
+                {
+                    "path": ".review-desk/sessions/review.review-session.json",
+                    "reason": "Agent excluded its own session manifest."
+                }
             ]
         });
         fs::write(
@@ -3008,10 +3263,41 @@ mod tests {
 
         assert!(paths.contains(&"README.md"));
         assert!(paths.contains(&"src-tauri/src/lib.rs"));
-        assert!(session
-            .excluded_files
+        assert!(paths.contains(&"pnpm-lock.yaml"));
+        assert!(session.excluded_files.is_empty());
+
+        fs::remove_dir_all(repo).unwrap();
+    }
+
+    #[test]
+    fn direct_sessions_include_binary_icon_changes() {
+        let repo = temp_repo();
+        fs::create_dir_all(repo.join("src-tauri/icons")).unwrap();
+        fs::write(repo.join("README.md"), "initial\n").unwrap();
+        fs::write(repo.join("src-tauri/icons/icon.png"), [0_u8, 1, 2, 3]).unwrap();
+        run_git(&repo, &["init"]);
+        run_git(&repo, &["config", "user.email", "review-desk@example.test"]);
+        run_git(&repo, &["config", "user.name", "Review Desk Test"]);
+        run_git(&repo, &["add", "."]);
+        run_git(&repo, &["commit", "-m", "initial"]);
+
+        fs::write(repo.join("src-tauri/icons/icon.png"), [0_u8, 1, 2, 4]).unwrap();
+
+        let session = create_review_session(CreateReviewSessionRequest {
+            repo_path: repo.display().to_string(),
+            base_ref: None,
+            head_ref: None,
+            target: Some(ReviewTargetRequest::WorkingTree),
+        })
+        .unwrap();
+
+        let icon = session
+            .files
             .iter()
-            .any(|file| file.path == "pnpm-lock.yaml"));
+            .find(|file| file.path == "src-tauri/icons/icon.png")
+            .expect("binary icon should stay in direct sessions");
+        assert!(icon.hunks.is_empty());
+        assert!(session.excluded_files.is_empty());
 
         fs::remove_dir_all(repo).unwrap();
     }

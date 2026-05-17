@@ -14,6 +14,7 @@ pub enum InboxReason {
     Assigned,
     ReviewRequested,
     Both,
+    Authored,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

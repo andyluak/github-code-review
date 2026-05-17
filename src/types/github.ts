@@ -1,4 +1,8 @@
-export type InboxReason = "ASSIGNED" | "REVIEW_REQUESTED" | "BOTH";
+export type InboxReason =
+  | "ASSIGNED"
+  | "REVIEW_REQUESTED"
+  | "BOTH"
+  | "AUTHORED";
 
 export type ChecksState =
   | "PASSING"
@@ -186,6 +190,8 @@ export type PublishInlineComment = {
   path: string;
   line: number;
   side?: string | null;
+  startLine?: number | null;
+  startSide?: string | null;
   body: string;
 };
 

@@ -39,12 +39,18 @@ export function getGithubViewer(): Promise<GitHubViewer> {
 export function listMyPullRequests(
   request: ListMyPullRequestsRequest,
 ): Promise<ListMyPullRequestsResponse> {
+  if (request.force) {
+    return invoke("list_my_pull_requests", { request });
+  }
   return invokeRead("list_my_pull_requests", { request });
 }
 
 export function loadPullRequestContext(
   request: LoadPullRequestContextRequest,
 ): Promise<LoadPullRequestContextResponse> {
+  if (request.force) {
+    return invoke("load_pull_request_context", { request });
+  }
   return invokeRead("load_pull_request_context", { request });
 }
 
