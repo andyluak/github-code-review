@@ -66,6 +66,8 @@ pub struct PullRequestSummary {
     pub state: String,
     pub is_draft: bool,
     pub author: PrAuthor,
+    #[serde(default)]
+    pub viewer_did_author: bool,
     pub base_ref_name: String,
     pub head_ref_name: String,
     pub head_ref_oid: String,

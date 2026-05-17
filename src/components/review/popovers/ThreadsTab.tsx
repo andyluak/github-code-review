@@ -45,16 +45,16 @@ export function ThreadsTab({ prContext, error, onJump }: Props) {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex flex-wrap items-center gap-1.5 border-b border-[var(--rd-hair)] bg-[var(--rd-ink)] px-3 py-2 text-[10px]">
-        <Chip label={`Open · ${counts.open}`} active={filter === "open"} onClick={() => setFilter("open")} />
-        <Chip label={`Resolved · ${counts.resolved}`} active={filter === "resolved"} onClick={() => setFilter("resolved")} />
-        <Chip label={`Outdated · ${counts.outdated}`} active={filter === "outdated"} onClick={() => setFilter("outdated")} />
-        <Chip label={`All · ${counts.total}`} active={filter === "all"} onClick={() => setFilter("all")} />
+      <div className="flex flex-wrap items-center gap-4 border-b border-[var(--rd-hair)] bg-[var(--rd-ink)] px-3 py-2">
+        <Chip label="open" count={counts.open} active={filter === "open"} onClick={() => setFilter("open")} />
+        <Chip label="resolved" count={counts.resolved} active={filter === "resolved"} onClick={() => setFilter("resolved")} />
+        <Chip label="outdated" count={counts.outdated} active={filter === "outdated"} onClick={() => setFilter("outdated")} />
+        <Chip label="all" count={counts.total} active={filter === "all"} onClick={() => setFilter("all")} />
         <input
           value={query}
           onChange={(e) => setQuery(e.currentTarget.value)}
-          placeholder="Search…"
-          className="ml-auto h-6 w-32 rounded border-0 bg-[var(--rd-ink-2)] px-2 font-mono text-[10px] text-[var(--rd-cream)] placeholder:text-[var(--rd-graphite)]"
+          placeholder="search…"
+          className="ml-auto h-7 w-36 rounded-none border border-[var(--rd-hair)] bg-[var(--rd-ink-2)] px-2 font-voice text-[12px] lowercase text-[var(--rd-cream)] placeholder:text-[var(--rd-pencil)] focus-visible:border-[var(--rd-vermillion-line)] focus-visible:outline-none"
         />
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
@@ -68,8 +68,13 @@ export function ThreadsTab({ prContext, error, onJump }: Props) {
               key={group.path}
               className="border-b border-[var(--rd-hair)] px-3 py-2.5"
             >
-              <div className="mb-1 truncate font-mono text-[10px] uppercase tracking-[0.16em] text-[var(--rd-pencil)]">
-                {compactPath(group.path, 42)}
+              <div className="mb-1.5 flex items-baseline gap-2">
+                <span className="truncate font-mono text-[11px] text-[var(--rd-cream-2)]">
+                  {compactPath(group.path, 42)}
+                </span>
+                <span className="font-voice text-[10.5px] lowercase tracking-[0.02em] text-[var(--rd-pencil)]">
+                  · {group.threads.length} {group.threads.length === 1 ? "thread" : "threads"}
+                </span>
               </div>
               <ul className="space-y-1">
                 {group.threads.map((t) => (
@@ -122,25 +127,49 @@ export function ThreadsTab({ prContext, error, onJump }: Props) {
 
 function Chip({
   label,
+  count,
   active,
   onClick,
 }: {
   label: string;
+  count: number;
   active: boolean;
   onClick: () => void;
 }) {
+  // Mirrors the FilterChip in DraftsTab so the secondary chip rhythm
+  // is identical across the PR overview popover.
   return (
     <button
       type="button"
       onClick={onClick}
+      aria-pressed={active}
       className={[
-        "h-6 rounded-full px-2.5 font-mono text-[10px] uppercase tracking-wider",
+        "group/chip relative inline-flex shrink-0 items-baseline gap-1.5 whitespace-nowrap py-1 transition-colors duration-150",
         active
-          ? "bg-[var(--rd-vermillion-bg)] text-[var(--rd-vermillion-2)]"
-          : "text-[var(--rd-graphite)] hover:text-[var(--rd-cream)]",
+          ? "text-[var(--rd-cream)]"
+          : "text-[var(--rd-pencil)] hover:text-[var(--rd-cream)]",
       ].join(" ")}
     >
-      {label}
+      <span className="font-voice text-[12.5px] lowercase tracking-[0.01em]">
+        {label}
+      </span>
+      <span
+        className={[
+          "font-mono text-[11px] tabular-nums leading-none transition-colors duration-150",
+          active
+            ? "text-[var(--rd-vermillion-2)]"
+            : "text-[var(--rd-graphite)] group-hover/chip:text-[var(--rd-cream-2)]",
+        ].join(" ")}
+      >
+        {count}
+      </span>
+      <span
+        aria-hidden="true"
+        className={[
+          "pointer-events-none absolute -bottom-[7px] left-0 right-0 h-[2px] transition-colors duration-150",
+          active ? "bg-[var(--rd-vermillion)]" : "bg-transparent",
+        ].join(" ")}
+      />
     </button>
   );
 }

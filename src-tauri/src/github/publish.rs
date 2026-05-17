@@ -63,6 +63,45 @@ mutation($threadId: ID!, $body: String!) {
   }
 }
 "#;
+const APPROVAL_ELIGIBILITY_QUERY: &str = r#"
+query($owner: String!, $repo: String!, $number: Int!) {
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $number) {
+      viewerDidAuthor
+      author { login }
+    }
+  }
+}
+"#;
+
+#[derive(Debug, Deserialize)]
+struct ApprovalEligibilityResponse {
+    data: ApprovalEligibilityData,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApprovalEligibilityData {
+    repository: Option<ApprovalEligibilityRepo>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ApprovalEligibilityRepo {
+    pull_request: Option<ApprovalEligibilityPr>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+struct ApprovalEligibilityPr {
+    viewer_did_author: bool,
+    author: Option<ApprovalEligibilityAuthor>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(default)]
+struct ApprovalEligibilityAuthor {
+    login: String,
+}
 
 pub fn run_publish_pull_request_review(
     gh: &dyn GhRunner,
@@ -75,6 +114,9 @@ pub fn run_publish_pull_request_review(
     let repo = resolve_github_repo(&repo_root)?;
     let probe = fetch_pr_head_probe(gh, &repo.owner, &repo.repo, request.number)?;
     assert_expected_head(&probe, &request.expected_head_sha)?;
+    if request.event == "APPROVE" {
+        assert_approval_allowed(gh, &repo.owner, &repo.repo, request.number)?;
+    }
 
     let record_path = published_review_path(&repo_root, request.number)?;
     let mut record = read_json::<PublishedReviewRecord>(&record_path)?.unwrap_or_default();
@@ -253,6 +295,48 @@ fn post_thread_reply(gh: &dyn GhRunner, reply: &PublishThreadReply) -> Result<()
     Ok(())
 }
 
+fn assert_approval_allowed(
+    gh: &dyn GhRunner,
+    owner: &str,
+    repo: &str,
+    number: i64,
+) -> Result<(), String> {
+    let body = gh.run(
+        &[
+            "api",
+            "graphql",
+            "-f",
+            &format!("query={APPROVAL_ELIGIBILITY_QUERY}"),
+            "-f",
+            &format!("owner={owner}"),
+            "-f",
+            &format!("repo={repo}"),
+            "-F",
+            &format!("number={number}"),
+        ],
+        None,
+    )?;
+    let response: ApprovalEligibilityResponse = parse_graphql(&body)?;
+    let pr = response
+        .data
+        .repository
+        .and_then(|r| r.pull_request)
+        .ok_or_else(|| format!("Pull request {number} not found in {owner}/{repo}"))?;
+
+    if pr.viewer_did_author {
+        let author = pr
+            .author
+            .map(|a| a.login)
+            .filter(|login| !login.is_empty())
+            .unwrap_or_else(|| "the current GitHub user".into());
+        return Err(format!(
+            "GitHub does not allow approving your own pull request. PR #{number} is authored by {author}; publish a comment instead, or merge directly if repository rules allow it."
+        ));
+    }
+
+    Ok(())
+}
+
 fn inline_comment_payload(comment: &PublishInlineComment) -> serde_json::Value {
     let side = comment.side.clone().unwrap_or_else(|| "RIGHT".to_string());
     let mut payload = serde_json::json!({
@@ -394,13 +478,35 @@ mod tests {
             true,
         ));
     }
-
     #[test]
     fn reply_only_comment_does_not_create_empty_review() {
         assert!(!should_create_review("COMMENT", 0, true));
         assert!(should_create_review("COMMENT", 1, true));
         assert!(should_create_review("COMMENT", 0, false));
         assert!(should_create_review("APPROVE", 0, true));
+    }
+
+    #[test]
+    fn approval_guard_rejects_viewer_authored_pr() {
+        let fake = crate::github::gh::FakeGh::new(vec![Ok(
+            r#"{"data":{"repository":{"pullRequest":{"viewerDidAuthor":true,"author":{"login":"andyluak"}}}}}"#
+                .into(),
+        )]);
+
+        let err = assert_approval_allowed(&fake, "owner", "repo", 1).unwrap_err();
+
+        assert!(err.contains("does not allow approving your own pull request"));
+        assert!(err.contains("andyluak"));
+    }
+
+    #[test]
+    fn approval_guard_allows_non_author_review() {
+        let fake = crate::github::gh::FakeGh::new(vec![Ok(
+            r#"{"data":{"repository":{"pullRequest":{"viewerDidAuthor":false,"author":{"login":"teammate"}}}}}"#
+                .into(),
+        )]);
+
+        assert!(assert_approval_allowed(&fake, "owner", "repo", 1).is_ok());
     }
 
     #[test]

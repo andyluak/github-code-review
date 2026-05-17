@@ -38,6 +38,7 @@ query($owner: String!, $repo: String!, $number: Int!) {
       headRef { name }
       isCrossRepository
       author { login ... on User { avatarUrl } }
+      viewerDidAuthor
       viewerCanUpdate
       labels(first: 30) { nodes { name } }
       reviewThreads(first: 100) {
@@ -133,6 +134,7 @@ struct PullRequestNode {
     head_repository: Option<HeadRepoNode>,
     is_cross_repository: bool,
     author: Option<AuthorNode>,
+    viewer_did_author: bool,
     viewer_can_update: bool,
     labels: Option<LabelsConn>,
     review_threads: Option<ReviewThreadsConn>,
@@ -365,6 +367,7 @@ fn build_context_from_node(
             login: author.login,
             avatar_url: author.avatar_url,
         },
+        viewer_did_author: node.viewer_did_author,
         base_ref_name: node.base_ref_name.clone(),
         head_ref_name: node.head_ref_name.clone(),
         head_ref_oid: node.head_ref_oid.clone(),

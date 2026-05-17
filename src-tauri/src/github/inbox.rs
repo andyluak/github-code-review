@@ -258,6 +258,7 @@ struct ContextNode {
 
 fn pr_node_to_summary(node: PrNode, viewer_login: &str, reason: InboxReason) -> PullRequestSummary {
     let author = node.author.unwrap_or_default();
+    let viewer_did_author = author.login == viewer_login;
     let labels = node
         .labels
         .map(|c| {
@@ -320,6 +321,7 @@ fn pr_node_to_summary(node: PrNode, viewer_login: &str, reason: InboxReason) -> 
             login: author.login,
             avatar_url: author.avatar_url,
         },
+        viewer_did_author,
         base_ref_name: node.base_ref_name,
         head_ref_name: node.head_ref_name,
         head_ref_oid: node.head_ref_oid,
@@ -601,6 +603,7 @@ mod tests {
                 login: "octocat".into(),
                 avatar_url: None,
             },
+            viewer_did_author: false,
             base_ref_name: "main".into(),
             head_ref_name: format!("feature-{number}"),
             head_ref_oid: "abc".into(),

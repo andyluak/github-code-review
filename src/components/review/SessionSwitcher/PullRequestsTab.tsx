@@ -65,6 +65,7 @@ function historyToSummary(
     state: "MERGED",
     isDraft: false,
     author: { login: item.createdBy ?? "", avatarUrl: null },
+    viewerDidAuthor: false,
     baseRefName: item.baseRef ?? "",
     headRefName: item.headRef ?? "",
     headRefOid: item.headSha ?? "",

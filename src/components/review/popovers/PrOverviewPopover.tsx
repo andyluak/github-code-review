@@ -49,21 +49,21 @@ export function PrOverviewPopover(props: PrOverviewProps) {
             : ""}
         </div>
       </header>
-      <nav className="flex shrink-0 gap-2 border-b border-[var(--rd-hair)] px-3 py-1.5 font-mono text-[11px]">
+      <nav className="flex shrink-0 items-end gap-5 border-b border-[var(--rd-hair)] px-3 pt-2 pb-2.5">
         <TabButton
-          label="Drafts"
+          label="drafts"
           count={draftsCount}
           active={tab === "drafts"}
           onClick={() => setTab("drafts")}
         />
         <TabButton
-          label="Threads"
+          label="threads"
           count={`${threadsOpenCount} / ${threadsTotal}`}
           active={tab === "threads"}
           onClick={() => setTab("threads")}
         />
         <TabButton
-          label="Activity"
+          label="activity"
           count={activityTotal}
           active={tab === "activity"}
           onClick={() => setTab("activity")}
@@ -106,21 +106,41 @@ function TabButton({
   active: boolean;
   onClick: () => void;
 }) {
+  // Voice lowercase label + mono tabular count. Active state is a 2px
+  // vermillion rule painted under the word — same "margin marker" idiom
+  // as the secondary chip rows. No pill behind the count.
   return (
     <button
       type="button"
       onClick={onClick}
+      aria-pressed={active}
       className={[
-        "flex items-center gap-1.5 rounded px-2 py-1",
+        "group/tab relative inline-flex shrink-0 items-baseline gap-2 whitespace-nowrap transition-colors duration-150",
         active
-          ? "text-[var(--rd-vermillion-2)]"
+          ? "text-[var(--rd-cream)]"
           : "text-[var(--rd-pencil)] hover:text-[var(--rd-cream)]",
       ].join(" ")}
     >
-      <span>{label}</span>
-      <span className="rounded bg-[var(--rd-ink-2)] px-1.5 py-0.5 text-[9.5px] tabular-nums text-[var(--rd-graphite)]">
+      <span className="font-voice text-[13.5px] lowercase tracking-[0.01em]">
+        {label}
+      </span>
+      <span
+        className={[
+          "font-mono text-[11.5px] tabular-nums leading-none transition-colors duration-150",
+          active
+            ? "text-[var(--rd-vermillion-2)]"
+            : "text-[var(--rd-graphite)] group-hover/tab:text-[var(--rd-cream-2)]",
+        ].join(" ")}
+      >
         {count}
       </span>
+      <span
+        aria-hidden="true"
+        className={[
+          "pointer-events-none absolute -bottom-[9px] left-0 right-0 h-[2px] transition-colors duration-150",
+          active ? "bg-[var(--rd-vermillion)]" : "bg-transparent",
+        ].join(" ")}
+      />
     </button>
   );
 }

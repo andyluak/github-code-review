@@ -8,6 +8,7 @@ import {
 import { normalizeThreadReplyMap } from "@/lib/thread-reply-drafts";
 import { threadCommentAuthorLabel } from "@/lib/github-labels";
 import {
+  getGithubViewer,
   publishPullRequestReview,
   mergePullRequest,
   loadPullRequestContext,
@@ -47,6 +48,8 @@ type Props = {
 };
 
 const FALLBACK_METHODS: Array<"MERGE" | "SQUASH" | "REBASE"> = ["SQUASH", "MERGE", "REBASE"];
+const SELF_APPROVAL_MESSAGE =
+  "GitHub does not allow approving your own pull request. Publish a comment instead, or merge directly if repository rules allow it.";
 
 export function PublishMergeSheet(props: Props) {
   const { open, session, workspaceState, prContext, onClose, onPublished, onMerged } = props;
@@ -63,6 +66,7 @@ export function PublishMergeSheet(props: Props) {
   const [error, setError] = useState<string | null>(null);
   const [readiness, setReadiness] = useState<PullRequestMergeReadiness | null>(null);
   const [chosenMethod, setChosenMethod] = useState<"MERGE" | "SQUASH" | "REBASE" | null>(null);
+  const [viewerLogin, setViewerLogin] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -73,6 +77,22 @@ export function PublishMergeSheet(props: Props) {
     setError(null);
     setReadiness(null);
     setChosenMethod(null);
+    setViewerLogin(null);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    getGithubViewer()
+      .then((viewer) => {
+        if (!cancelled) setViewerLogin(viewer.login);
+      })
+      .catch(() => {
+        if (!cancelled) setViewerLogin(null);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [open]);
 
   const reviewInlineDrafts = useMemo<InlineComment[]>(() => {
@@ -146,15 +166,25 @@ export function PublishMergeSheet(props: Props) {
     prContext?.summary.headRefOid,
     session.target.kind === "pullRequest" ? session.target.headSha : null,
   );
+  const prAuthorLogin = prContext?.summary.author.login ?? "";
+  const viewerDidAuthor =
+    prContext?.summary.viewerDidAuthor === true ||
+    (viewerLogin !== null &&
+      prAuthorLogin.trim().toLowerCase() === viewerLogin.trim().toLowerCase());
 
   const canSubmit =
     stage === "compose" &&
     headSha !== null &&
+    !(intent === "approve" && viewerDidAuthor) &&
     (intent === "approve" || activeDrafts.length > 0 || body.trim().length > 0);
 
   async function submit() {
     if (!headSha || prNumber === null) {
       setError("PR head SHA is missing — refresh and retry.");
+      return;
+    }
+    if (intent === "approve" && viewerDidAuthor) {
+      setError(SELF_APPROVAL_MESSAGE);
       return;
     }
     setError(null);
@@ -415,9 +445,14 @@ export function PublishMergeSheet(props: Props) {
           />
           <IntentCard
             title="Approve"
-            description="Sign off. After posting, merge zone reveals below."
+            description={
+              viewerDidAuthor
+                ? "Unavailable because you authored this PR."
+                : "Sign off. After posting, merge zone reveals below."
+            }
             active={intent === "approve"}
             tone="approve"
+            disabled={viewerDidAuthor}
             onClick={() => setIntent("approve")}
           />
         </div>
@@ -551,12 +586,14 @@ function IntentCard({
   description,
   active,
   tone,
+  disabled,
   onClick,
 }: {
   title: string;
   description: string;
   active: boolean;
   tone: "neutral" | "approve";
+  disabled?: boolean;
   onClick: () => void;
 }) {
   const activeCls =
@@ -566,10 +603,12 @@ function IntentCard({
   return (
     <button
       type="button"
+      disabled={disabled}
       onClick={onClick}
       className={[
         "rounded-md border bg-[var(--rd-ink-2)] p-2.5 text-left",
-        active ? activeCls : "border-[var(--rd-hair)] hover:bg-[var(--rd-ink-3)]",
+        active ? activeCls : "border-[var(--rd-hair)]",
+        disabled ? "cursor-not-allowed opacity-50" : "hover:bg-[var(--rd-ink-3)]",
       ].join(" ")}
     >
       <div className="flex items-center gap-2 text-[12px] font-semibold text-[var(--rd-cream)]">

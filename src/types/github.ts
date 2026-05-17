@@ -61,6 +61,7 @@ export type PullRequestSummary = {
   state: string;
   isDraft: boolean;
   author: PrAuthor;
+  viewerDidAuthor?: boolean;
   baseRefName: string;
   headRefName: string;
   headRefOid: string;
