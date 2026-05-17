@@ -2,6 +2,7 @@ import { useState } from "react";
 import { DraftsTab, type DraftJumpTarget } from "./DraftsTab";
 import { ThreadsTab } from "./ThreadsTab";
 import { ActivityTab } from "./ActivityTab";
+import { countThreadReplyDrafts } from "@/lib/thread-reply-drafts";
 import type {
   PullRequestContext,
 } from "@/types/github";
@@ -136,9 +137,7 @@ function countDrafts(
     for (const c of fs.inlineComments ?? []) {
       if (c.visibility === "review") n += 1;
     }
-    for (const reply of Object.values(fs.threadReplies ?? {})) {
-      if (reply.trim()) n += 1;
-    }
+    n += countThreadReplyDrafts(fs.threadReplies);
   }
   return n;
 }

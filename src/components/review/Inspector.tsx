@@ -1,8 +1,9 @@
-import { useEffect, useId, useMemo, useRef } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { NotebookPen } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { SlabButton } from "@/components/ui/slab-button";
 import { compactPath } from "@/lib/format";
+import { threadJumpLine, threadLineLabel } from "@/lib/github-labels";
 import type {
   PullRequestContext,
   ReviewThread,
@@ -34,7 +35,6 @@ type InspectorProps = {
   onDeleteInline?: (fileId: string, commentId: string) => void;
   prContext?: PullRequestContext | null;
   onJumpToThread?: (target: { path: string; line: number }) => void;
-  onOpenAllThreads?: () => void;
 };
 
 export function Inspector(props: InspectorProps) {
@@ -52,18 +52,23 @@ export function Inspector(props: InspectorProps) {
     onScrollHandled,
     prContext,
     onJumpToThread,
-    onOpenAllThreads,
   } = props;
   const scrollViewportRef = useRef<HTMLDivElement | null>(null);
+  const [showAllThreads, setShowAllThreads] = useState(false);
   const supportsReviewComments = session.target.kind === "pullRequest";
 
   const fileThreads = useMemo<ReviewThread[]>(() => {
     if (!file || !prContext) return [];
     return prContext.reviewThreads.filter((t) => t.path === file.path);
   }, [prContext, file]);
+  const allThreads = prContext?.reviewThreads ?? [];
 
   useEffect(() => {
     scrollViewportRef.current?.scrollTo({ top: 0, left: 0, behavior: "auto" });
+  }, [file?.id]);
+
+  useEffect(() => {
+    setShowAllThreads(false);
   }, [file?.id]);
 
   useEffect(() => {
@@ -88,9 +93,11 @@ export function Inspector(props: InspectorProps) {
               {supportsReviewComments ? (
                 <ThreadsOnThisFile
                   threads={fileThreads}
+                  allThreads={allThreads}
+                  showAll={showAllThreads}
                   filePath={file.path}
+                  onShowAllChange={setShowAllThreads}
                   onJump={onJumpToThread}
-                  onOpenAll={onOpenAllThreads}
                 />
               ) : null}
               <AgentContextSection file={file} session={session} />
@@ -149,18 +156,24 @@ function SectionHeader({
 
 function ThreadsOnThisFile({
   threads,
+  allThreads,
+  showAll,
   filePath,
   onJump,
-  onOpenAll,
+  onShowAllChange,
 }: {
   threads: ReviewThread[];
+  allThreads: ReviewThread[];
+  showAll: boolean;
   filePath: string;
   onJump?: (target: { path: string; line: number }) => void;
-  onOpenAll?: () => void;
+  onShowAllChange: (showAll: boolean) => void;
 }) {
   const headingId = useId();
-  const visible = threads.filter((t) => !t.isOutdated);
-  if (visible.length === 0) {
+  const visibleFileThreads = threads.filter((t) => !t.isOutdated);
+  const visiblePrThreads = allThreads.filter((t) => !t.isOutdated);
+  const visible = showAll ? visiblePrThreads : visibleFileThreads;
+  if (visibleFileThreads.length === 0 && visiblePrThreads.length === 0) {
     return null;
   }
   return (
@@ -170,50 +183,65 @@ function ThreadsOnThisFile({
       className="border-b border-[var(--rd-hair)] px-4 py-4"
     >
       <SectionHeader
-        label={`Threads on this file · ${visible.length}`}
+        label={
+          showAll
+            ? `All PR threads · ${visiblePrThreads.length}`
+            : `Threads on this file · ${visibleFileThreads.length}`
+        }
         headingId={headingId}
         trailing={
-          onOpenAll ? (
+          visiblePrThreads.length > 0 ? (
             <button
               type="button"
-              onClick={onOpenAll}
+              onClick={() => onShowAllChange(!showAll)}
               className="font-mono text-[10px] text-[var(--rd-graphite)] hover:text-[var(--rd-cream)]"
             >
-              all PR threads →
+              {showAll ? "this file →" : "all PR threads →"}
             </button>
           ) : null
         }
       />
-      <ul className="space-y-1">
-        {visible.map((t) => (
-          <li key={t.id}>
-            <button
-              type="button"
-              onClick={() =>
-                onJump?.({
-                  path: filePath,
-                  line: t.line ?? t.originalLine ?? 0,
-                })
-              }
-              className="flex w-full items-start gap-2 rounded px-2 py-1.5 text-left hover:bg-[var(--rd-ink-2)]"
-            >
-              <span
-                className={
-                  t.isResolved
-                    ? "mt-1 size-1.5 rounded-full bg-[var(--rd-pencil)]"
-                    : "mt-1 size-1.5 rounded-full bg-[var(--rd-vermillion-2)]"
+      {visible.length > 0 ? (
+        <ul className="space-y-1">
+          {visible.map((t) => (
+            <li key={t.id}>
+              <button
+                type="button"
+                onClick={() =>
+                  onJump?.({
+                    path: t.path || filePath,
+                    line: threadJumpLine(t),
+                  })
                 }
-              />
-              <span className="font-mono text-[10px] text-[var(--rd-pencil)]">
-                L{t.line ?? t.originalLine ?? "?"}
-              </span>
-              <span className="min-w-0 flex-1 line-clamp-2 text-[11.5px] text-[var(--rd-cream)]">
-                {t.comments[0]?.body ?? ""}
-              </span>
-            </button>
-          </li>
-        ))}
-      </ul>
+                className="flex w-full items-start gap-2 rounded px-2 py-1.5 text-left hover:bg-[var(--rd-ink-2)]"
+              >
+                <span
+                  className={
+                    t.isResolved
+                      ? "mt-1 size-1.5 rounded-full bg-[var(--rd-pencil)]"
+                      : "mt-1 size-1.5 rounded-full bg-[var(--rd-vermillion-2)]"
+                  }
+                />
+                <span className="font-mono text-[10px] text-[var(--rd-pencil)]">
+                  {threadLineLabel(t)}
+                </span>
+                {showAll ? (
+                  <span className="min-w-0 max-w-24 truncate font-mono text-[10px] text-[var(--rd-graphite)]">
+                    {t.path}
+                  </span>
+                ) : null}
+                <span className="min-w-0 flex-1 line-clamp-2 text-[11.5px] text-[var(--rd-cream)]">
+                  {t.comments[0]?.body ?? ""}
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <div className="rounded bg-[var(--rd-ink-2)] px-3 py-2 text-[11px] text-[var(--rd-pencil)]">
+          No threads on this file.
+        </div>
+      )}
     </section>
   );
 }

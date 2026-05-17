@@ -4,12 +4,14 @@ import type {
   ActiveReviewSessionRequest,
   CreateReviewSessionRequest,
   ImportReviewSessionRequest,
+  LoadReviewAssetPreviewRequest,
   LoadReviewDiagramRequest,
   LoadReviewWorkspaceStateRequest,
   ListReviewRefsRequest,
   OpenReviewFileRequest,
   RecentRepo,
   RepoRefs,
+  ReviewAssetPreview,
   ReviewDiagram,
   ReviewHistoryItem,
   ReviewSession,
@@ -22,6 +24,10 @@ import type {
   SessionFileState,
   ViewedStatus,
 } from "@/types/review";
+import {
+  mergeThreadReplyDraftMaps,
+  normalizeThreadReplyMap,
+} from "@/lib/thread-reply-drafts";
 
 export async function createReviewSession(
   request: CreateReviewSessionRequest,
@@ -87,6 +93,12 @@ export async function openReviewFile(
   request: OpenReviewFileRequest,
 ): Promise<void> {
   return invoke<void>("open_review_file", { request });
+}
+
+export async function loadReviewAssetPreview(
+  request: LoadReviewAssetPreviewRequest,
+): Promise<ReviewAssetPreview> {
+  return invoke<ReviewAssetPreview>("load_review_asset_preview", { request });
 }
 
 export function createDefaultFileState(): SessionFileState {
@@ -611,14 +623,10 @@ function mergeFileState(
       currentState.inlineComments ?? [],
       recoveredState.inlineComments ?? [],
     ),
-    threadReplies: {
-      ...(recoveredState.threadReplies && typeof recoveredState.threadReplies === "object"
-        ? recoveredState.threadReplies
-        : {}),
-      ...(currentState.threadReplies && typeof currentState.threadReplies === "object"
-        ? currentState.threadReplies
-        : {}),
-    },
+    threadReplies: mergeThreadReplyDraftMaps(
+      recoveredState.threadReplies,
+      currentState.threadReplies,
+    ),
   };
 }
 
@@ -627,7 +635,13 @@ function stripUnknownFields(
 ): Partial<SessionFileState> | undefined {
   if (!value) return value;
   const { status, lastPatchHash, privateNote, inlineComments, threadReplies } = value as SessionFileState & { publishableDraft?: string };
-  return { status, lastPatchHash, privateNote, inlineComments, threadReplies };
+  return {
+    status,
+    lastPatchHash,
+    privateNote,
+    inlineComments,
+    threadReplies: normalizeThreadReplyMap(threadReplies),
+  };
 }
 
 function viewedStatusRank(status: ViewedStatus | undefined) {

@@ -28,11 +28,14 @@ pub struct ListMyPullRequestsResponse {
 }
 
 const INBOX_QUERY: &str = r#"
-query($q1: String!, $q2: String!) {
+query($q1: String!, $q2: String!, $q3: String!) {
   assigned: search(query: $q1, type: ISSUE, first: 50) {
     nodes { ...PrFields }
   }
   reviewRequested: search(query: $q2, type: ISSUE, first: 50) {
+    nodes { ...PrFields }
+  }
+  authored: search(query: $q3, type: ISSUE, first: 50) {
     nodes { ...PrFields }
   }
 }
@@ -75,9 +78,11 @@ struct InboxData {
     assigned: SearchConnection,
     #[serde(rename = "reviewRequested")]
     review_requested: SearchConnection,
+    #[serde(default)]
+    authored: SearchConnection,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
 struct SearchConnection {
     #[serde(default)]
     nodes: Vec<PrNode>,
@@ -400,6 +405,7 @@ pub fn fetch_inbox(
         "repo:{}/{} is:pr is:open review-requested:@me",
         repo.owner, repo.repo
     );
+    let authored_query = format!("repo:{}/{} is:pr is:open author:@me", repo.owner, repo.repo);
     let body = gh.run(
         &[
             "api",
@@ -410,6 +416,8 @@ pub fn fetch_inbox(
             &format!("q1={assignee_query}"),
             "-f",
             &format!("q2={review_query}"),
+            "-f",
+            &format!("q3={authored_query}"),
         ],
         None,
     )?;
@@ -434,6 +442,10 @@ pub fn fetch_inbox(
                 copy
             });
     }
+    for node in response.data.authored.nodes {
+        let summary = pr_node_to_summary(node, viewer_login, InboxReason::Authored);
+        by_number.entry(summary.number).or_insert(summary);
+    }
     let mut results: Vec<PullRequestSummary> = by_number.into_values().collect();
     sort_inbox(&mut results);
     Ok(results)
@@ -441,17 +453,9 @@ pub fn fetch_inbox(
 
 pub fn sort_inbox(results: &mut [PullRequestSummary]) {
     results.sort_by(|a, b| {
-        // 1) review-requested or both first
-        let a_priority = if a.is_review_requested_from_viewer {
-            0
-        } else {
-            1
-        };
-        let b_priority = if b.is_review_requested_from_viewer {
-            0
-        } else {
-            1
-        };
+        // 1) actionable reviews first, then assignments, then viewer-authored PRs.
+        let a_priority = inbox_priority(a);
+        let b_priority = inbox_priority(b);
         match a_priority.cmp(&b_priority) {
             Ordering::Equal => {}
             ord => return ord,
@@ -472,6 +476,16 @@ pub fn sort_inbox(results: &mut [PullRequestSummary]) {
         // 3) PR number descending as tie-breaker
         b.number.cmp(&a.number)
     });
+}
+
+fn inbox_priority(pr: &PullRequestSummary) -> u8 {
+    if pr.is_review_requested_from_viewer {
+        0
+    } else if pr.is_assigned_to_viewer {
+        1
+    } else {
+        2
+    }
 }
 
 pub fn now_iso_pub() -> String {
@@ -634,6 +648,20 @@ mod tests {
     }
 
     #[test]
+    fn sorts_assigned_before_authored() {
+        let assigned = make_summary(1, false, "2026-01-01T00:00:00Z");
+        let mut authored = make_summary(2, false, "2026-02-01T00:00:00Z");
+        authored.is_assigned_to_viewer = false;
+        authored.inbox_reason = InboxReason::Authored;
+        let mut items = vec![authored, assigned];
+
+        sort_inbox(&mut items);
+
+        assert_eq!(items[0].number, 1);
+        assert_eq!(items[1].number, 2);
+    }
+
+    #[test]
     fn dedupes_assigned_and_review_requested_marks_both() {
         let fake = FakeGh::new(vec![Ok(r#"{
             "data": {
@@ -671,6 +699,45 @@ mod tests {
         assert_eq!(prs.len(), 1);
         assert_eq!(prs[0].inbox_reason, InboxReason::Both);
         assert!(prs[0].is_review_requested_from_viewer);
+    }
+
+    #[test]
+    fn includes_viewer_authored_open_pull_requests() {
+        let fake = FakeGh::new(vec![Ok(r#"{
+            "data": {
+                "assigned": { "nodes": [] },
+                "reviewRequested": { "nodes": [] },
+                "authored": { "nodes": [
+                    {"number": 7, "id":"x", "title":"mine", "url":"u", "state":"OPEN", "isDraft":false,
+                     "updatedAt":"2026-01-01T00:00:00Z", "baseRefName":"main", "headRefName":"feat", "headRefOid":"sha",
+                     "author":{"login":"alex"},
+                     "labels":{"nodes":[]},
+                     "reviewRequests":{"nodes":[]},
+                     "assignees":{"nodes":[]},
+                     "latestReviews":{"nodes":[]},
+                     "comments":{"totalCount":0},
+                     "reviewThreads":{"nodes":[], "totalCount":0},
+                     "commits":{"nodes":[]} }
+                ]}
+            }
+        }"#.into())]);
+        let repo = GitHubRepoRef {
+            owner: "owner".into(),
+            repo: "repo".into(),
+        };
+
+        let prs = fetch_inbox(&fake, &repo, "alex").unwrap();
+
+        assert_eq!(prs.len(), 1);
+        assert_eq!(prs[0].number, 7);
+        assert_eq!(prs[0].inbox_reason, InboxReason::Authored);
+        assert_eq!(prs[0].author.login, "alex");
+        assert!(!prs[0].is_assigned_to_viewer);
+        assert!(!prs[0].is_review_requested_from_viewer);
+
+        let calls = fake.calls.lock().unwrap();
+        let args = calls[0].0.join("\n");
+        assert!(args.contains("q3=repo:owner/repo is:pr is:open author:@me"));
     }
 
     #[test]

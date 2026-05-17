@@ -16,6 +16,8 @@ pub struct PublishInlineComment {
     pub path: String,
     pub line: i64,
     pub side: Option<String>,
+    pub start_line: Option<i64>,
+    pub start_side: Option<String>,
     pub body: String,
 }
 
@@ -51,6 +53,16 @@ pub struct PublishReviewResponse {
 }
 
 const ALLOWED_EVENTS: &[&str] = &["APPROVE", "REQUEST_CHANGES", "COMMENT"];
+const ADD_THREAD_REPLY_MUTATION: &str = r#"
+mutation($threadId: ID!, $body: String!) {
+  addPullRequestReviewThreadReply(input: {
+    pullRequestReviewThreadId: $threadId,
+    body: $body
+  }) {
+    comment { id }
+  }
+}
+"#;
 
 pub fn run_publish_pull_request_review(
     gh: &dyn GhRunner,
@@ -98,6 +110,18 @@ pub fn run_publish_pull_request_review(
         .iter()
         .filter(|r| !already_thread.contains(&r.fingerprint))
         .collect();
+    let duplicate_inline_fingerprints: Vec<String> = request
+        .inline_comments
+        .iter()
+        .filter(|c| already_inline.contains(&c.fingerprint))
+        .map(|c| c.fingerprint.clone())
+        .collect();
+    let duplicate_thread_fingerprints: Vec<String> = request
+        .thread_replies
+        .iter()
+        .filter(|r| already_thread.contains(&r.fingerprint))
+        .map(|r| r.fingerprint.clone())
+        .collect();
 
     let body_already_posted = body_or_event_already_posted(
         &request.event,
@@ -112,62 +136,60 @@ pub fn run_publish_pull_request_review(
             .last()
             .map(|a| a.review_id.clone())
             .unwrap_or_default();
+        let mut posted_fingerprints = duplicate_inline_fingerprints;
+        posted_fingerprints.extend(duplicate_thread_fingerprints);
         return Ok(PublishReviewResponse {
             review_id: Some(last_review_id),
             head_sha: probe.head_ref_oid,
-            posted_fingerprints: vec![],
+            posted_fingerprints,
             failed_fingerprints: vec![],
             skipped_because_duplicate: true,
         });
     }
 
-    // Build review payload and POST. We use gh api to call REST /repos/.../pulls/:n/reviews.
-    let inline_json: Vec<serde_json::Value> = pending_inline
-        .iter()
-        .map(|c| {
-            serde_json::json!({
-                "path": c.path,
-                "line": c.line,
-                "side": c.side.clone().unwrap_or_else(|| "RIGHT".to_string()),
-                "body": c.body,
-            })
-        })
-        .collect();
-    let payload = serde_json::json!({
-        "commit_id": probe.head_ref_oid,
-        "body": request.body,
-        "event": request.event,
-        "comments": inline_json,
-    });
+    let review_id =
+        if should_create_review(&request.event, pending_inline.len(), body_already_posted) {
+            // Build review payload and POST. We use gh api to call REST /repos/.../pulls/:n/reviews.
+            let inline_json: Vec<serde_json::Value> = pending_inline
+                .iter()
+                .map(|c| inline_comment_payload(c))
+                .collect();
+            let payload = serde_json::json!({
+                "commit_id": probe.head_ref_oid,
+                "body": request.body,
+                "event": request.event,
+                "comments": inline_json,
+            });
 
-    let url = format!(
-        "repos/{}/{}/pulls/{}/reviews",
-        repo.owner, repo.repo, request.number
-    );
-    let body = gh.run(
-        &[
-            "api",
-            "--method",
-            "POST",
-            "-H",
-            "Accept: application/vnd.github+json",
-            &url,
-            "--input",
-            "-",
-        ],
-        Some(&payload.to_string()),
-    )?;
-    let parsed: serde_json::Value = parse_graphql(&body)?;
-    let review_id = parsed
-        .get("id")
-        .and_then(|v| v.as_u64())
-        .map(|v| v.to_string())
-        .unwrap_or_default();
+            let url = format!(
+                "repos/{}/{}/pulls/{}/reviews",
+                repo.owner, repo.repo, request.number
+            );
+            let body = gh.run(
+                &[
+                    "api",
+                    "--method",
+                    "POST",
+                    "-H",
+                    "Accept: application/vnd.github+json",
+                    &url,
+                    "--input",
+                    "-",
+                ],
+                Some(&payload.to_string()),
+            )?;
+            let parsed: serde_json::Value = parse_graphql(&body)?;
+            parsed
+                .get("id")
+                .and_then(|v| v.as_u64())
+                .map(|v| v.to_string())
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
 
-    let mut posted_fingerprints: Vec<String> = pending_inline
-        .iter()
-        .map(|c| c.fingerprint.clone())
-        .collect();
+    let mut posted_fingerprints = duplicate_inline_fingerprints;
+    posted_fingerprints.extend(pending_inline.iter().map(|c| c.fingerprint.clone()));
     if !body_already_posted {
         if let Some(fp) = request.body_fingerprint.clone() {
             posted_fingerprints.push(fp);
@@ -177,28 +199,12 @@ pub fn run_publish_pull_request_review(
     let mut posted_thread_fingerprints: Vec<String> = Vec::new();
     let mut failed_fingerprints: Vec<String> = Vec::new();
     for reply in &pending_thread {
-        let url = format!(
-            "repos/{}/{}/pulls/comments/{}/replies",
-            repo.owner, repo.repo, reply.thread_id
-        );
-        let payload = serde_json::json!({"body": reply.body});
-        match gh.run(
-            &[
-                "api",
-                "--method",
-                "POST",
-                "-H",
-                "Accept: application/vnd.github+json",
-                &url,
-                "--input",
-                "-",
-            ],
-            Some(&payload.to_string()),
-        ) {
+        match post_thread_reply(gh, reply) {
             Ok(_) => posted_thread_fingerprints.push(reply.fingerprint.clone()),
             Err(_) => failed_fingerprints.push(reply.fingerprint.clone()),
         }
     }
+    posted_fingerprints.extend(duplicate_thread_fingerprints);
     posted_fingerprints.extend(posted_thread_fingerprints.clone());
 
     record.attempts.push(PublishedReviewAttempt {
@@ -232,6 +238,39 @@ pub fn run_publish_pull_request_review(
     })
 }
 
+fn post_thread_reply(gh: &dyn GhRunner, reply: &PublishThreadReply) -> Result<(), String> {
+    let payload = serde_json::json!({
+        "query": ADD_THREAD_REPLY_MUTATION,
+        "variables": {
+            "threadId": reply.thread_id,
+            "body": reply.body,
+        },
+    });
+    gh.run(
+        &["api", "graphql", "--input", "-"],
+        Some(&payload.to_string()),
+    )?;
+    Ok(())
+}
+
+fn inline_comment_payload(comment: &PublishInlineComment) -> serde_json::Value {
+    let side = comment.side.clone().unwrap_or_else(|| "RIGHT".to_string());
+    let mut payload = serde_json::json!({
+        "path": comment.path,
+        "line": comment.line,
+        "side": side.clone(),
+        "body": comment.body,
+    });
+    if let Some(start_line) = comment.start_line {
+        if start_line != comment.line {
+            payload["start_line"] = serde_json::json!(start_line);
+            payload["start_side"] =
+                serde_json::json!(comment.start_side.clone().unwrap_or_else(|| side.clone()));
+        }
+    }
+    payload
+}
+
 #[tauri::command]
 pub async fn publish_pull_request_review(
     request: PublishReviewRequest,
@@ -252,6 +291,14 @@ fn body_or_event_already_posted(
         return body_fingerprint_already_posted;
     }
     event == "COMMENT" && body.trim().is_empty()
+}
+
+fn should_create_review(
+    event: &str,
+    pending_inline_count: usize,
+    body_already_posted: bool,
+) -> bool {
+    pending_inline_count > 0 || !body_already_posted || event != "COMMENT"
 }
 
 #[cfg(test)]
@@ -294,6 +341,8 @@ mod tests {
                 path: "a.rs".into(),
                 line: 1,
                 side: None,
+                start_line: None,
+                start_side: None,
                 body: "x".into(),
             },
             PublishInlineComment {
@@ -301,6 +350,8 @@ mod tests {
                 path: "b.rs".into(),
                 line: 2,
                 side: None,
+                start_line: None,
+                start_side: None,
                 body: "y".into(),
             },
         ];
@@ -313,6 +364,26 @@ mod tests {
     }
 
     #[test]
+    fn multiline_inline_payload_includes_start_line_and_side() {
+        let comment = PublishInlineComment {
+            fingerprint: "FP-RANGE".into(),
+            path: "script.sh".into(),
+            line: 13,
+            side: Some("RIGHT".into()),
+            start_line: Some(10),
+            start_side: Some("RIGHT".into()),
+            body: "range".into(),
+        };
+
+        let payload = inline_comment_payload(&comment);
+
+        assert_eq!(payload["line"], 13);
+        assert_eq!(payload["side"], "RIGHT");
+        assert_eq!(payload["start_line"], 10);
+        assert_eq!(payload["start_side"], "RIGHT");
+    }
+
+    #[test]
     fn empty_approval_is_publishable_review_event() {
         assert!(!body_or_event_already_posted("APPROVE", "", None, false));
         assert!(body_or_event_already_posted("COMMENT", "", None, false));
@@ -322,5 +393,47 @@ mod tests {
             Some("approval-fingerprint"),
             true,
         ));
+    }
+
+    #[test]
+    fn reply_only_comment_does_not_create_empty_review() {
+        assert!(!should_create_review("COMMENT", 0, true));
+        assert!(should_create_review("COMMENT", 1, true));
+        assert!(should_create_review("COMMENT", 0, false));
+        assert!(should_create_review("APPROVE", 0, true));
+    }
+
+    #[test]
+    fn thread_replies_use_graphql_thread_reply_mutation() {
+        let fake = crate::github::gh::FakeGh::new(vec![Ok(
+            r#"{"data":{"addPullRequestReviewThreadReply":{"comment":{"id":"c1"}}}}"#.into(),
+        )]);
+        let reply = PublishThreadReply {
+            fingerprint: "fp".into(),
+            thread_id: "PRRT_kwDOSeLMTM5A".into(),
+            body: "looks good".into(),
+        };
+
+        post_thread_reply(&fake, &reply).unwrap();
+
+        let calls = fake.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0].0,
+            vec![
+                "api".to_string(),
+                "graphql".to_string(),
+                "--input".to_string(),
+                "-".to_string()
+            ]
+        );
+        let payload: serde_json::Value =
+            serde_json::from_str(calls[0].1.as_deref().unwrap()).unwrap();
+        assert!(payload["query"]
+            .as_str()
+            .unwrap()
+            .contains("addPullRequestReviewThreadReply"));
+        assert_eq!(payload["variables"]["threadId"], "PRRT_kwDOSeLMTM5A");
+        assert_eq!(payload["variables"]["body"], "looks good");
     }
 }

@@ -36,6 +36,16 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { useDiffViewMode } from "@/hooks/use-diff-view-mode";
 import { useFontZoom } from "@/hooks/use-font-zoom";
 import {
+  fingerprintInline,
+  fingerprintThreadReply,
+} from "@/lib/fingerprint";
+import {
+  countThreadReplyDrafts,
+  createThreadReplyDraft,
+  normalizeThreadReplyDrafts,
+  normalizeThreadReplyMap,
+} from "@/lib/thread-reply-drafts";
+import {
   clearRecentRepos,
   clearReviewHistory,
   createDefaultFileState,
@@ -80,6 +90,7 @@ import type {
   ReviewTargetRequest,
   ReviewWorkspaceState,
   SessionFileState,
+  ThreadReplyDraftMap,
 } from "@/types/review";
 
 type SelectedPullRequest = Pick<
@@ -203,6 +214,7 @@ function App() {
   const workspaceLoadId = useRef(0);
   const lastSeenActiveManifest = useRef<string | null>(null);
   const activeSessionPollRef = useRef(false);
+  const repoPathRef = useRef("");
   const sessionRef = useRef<ReviewSession | null>(null);
   const activeFileIdRef = useRef<string | null>(null);
   const currentSessionOpenedAtRef = useRef(0);
@@ -247,6 +259,10 @@ function App() {
       null
     );
   }, [inbox.data?.pullRequests, pullRequestNumber, repoRefs]);
+
+  useEffect(() => {
+    repoPathRef.current = repoPath;
+  }, [repoPath]);
 
   useEffect(() => {
     sessionRef.current = session;
@@ -335,15 +351,50 @@ function App() {
           ...createDefaultFileState(),
           ...current[fileId],
         };
+        const threadReplies = normalizeThreadReplyMap(previous.threadReplies);
+        const existingReplies = normalizeThreadReplyDrafts(threadReplies[threadId]);
 
         return {
           ...current,
           [fileId]: {
             ...previous,
             threadReplies: {
-              ...(previous.threadReplies ?? {}),
-              [threadId]: body,
+              ...threadReplies,
+              [threadId]: [...existingReplies, createThreadReplyDraft(body)],
             },
+          },
+        };
+      });
+    },
+    [updateWorkspaceState],
+  );
+
+  const deleteThreadReply = useCallback(
+    (fileId: string, threadId: string, draftId?: string) => {
+      updateWorkspaceState((current) => {
+        const previous = {
+          ...createDefaultFileState(),
+          ...current[fileId],
+        };
+        const threadReplies = normalizeThreadReplyMap(previous.threadReplies);
+        if (draftId) {
+          const kept = normalizeThreadReplyDrafts(threadReplies[threadId]).filter(
+            (draft) => draft.id !== draftId,
+          );
+          if (kept.length > 0) {
+            threadReplies[threadId] = kept;
+          } else {
+            delete threadReplies[threadId];
+          }
+        } else {
+          delete threadReplies[threadId];
+        }
+
+        return {
+          ...current,
+          [fileId]: {
+            ...previous,
+            threadReplies,
           },
         };
       });
@@ -388,6 +439,44 @@ function App() {
     }
     void loadDiagramForSession(currentSession);
   }, [isDiagramLoading, loadDiagramForSession]);
+
+  const clearCurrentReviewSurface = useCallback(() => {
+    const previousSession = sessionRef.current;
+    if (
+      previousSession &&
+      workspaceStateReadySessionIdRef.current === previousSession.id
+    ) {
+      void saveWorkspaceState(
+        previousSession,
+        latestWorkspaceStateRef.current,
+      ).catch(() => {});
+    }
+
+    sessionLoadId.current += 1;
+    workspaceLoadId.current += 1;
+    diagramLoadId.current += 1;
+    currentSessionOpenedAtRef.current = Date.now();
+    lastSeenActiveManifest.current = null;
+    sessionRef.current = null;
+    latestSessionRef.current = null;
+    activeFileIdRef.current = null;
+    workspaceStateReadySessionIdRef.current = null;
+    latestWorkspaceStateRef.current = {};
+
+    setSession(null);
+    setActiveFileId(null);
+    setReviewDiagram(null);
+    setIsDiagramLoading(false);
+    setDiagramError(null);
+    setWorkspaceStateReadySessionId(null);
+    replaceWorkspaceState({});
+    setCenterMode("diff");
+    setExpandedThreadId(null);
+    setJumpTarget(null);
+    setPublishOpen(false);
+    setHandoffOpen(false);
+    setIsLoading(false);
+  }, [replaceWorkspaceState]);
 
   const saveDiagram = useCallback((diagram: ReviewDiagram) => {
     const currentSession = sessionRef.current;
@@ -555,7 +644,7 @@ function App() {
           setCommitRef("HEAD");
           setRangeFromRef(defaults.baseRef || refs.defaultBranch || "");
           setRangeToRef(defaults.headRef || defaults.currentBranch || "HEAD");
-          setPullRequestNumber(refs.pullRequests[0]?.number ?? null);
+          setPullRequestNumber(null);
           setPullRequestInput("");
           setTargetKind("workingTree");
         }
@@ -595,13 +684,21 @@ function App() {
       return;
     }
 
-    lastSeenActiveManifest.current = activeSession.manifestPath;
+    const currentRepoPath = repoPathRef.current.trim();
+    if (currentRepoPath && !sameRepoPath(activeSession.repoRoot, currentRepoPath)) {
+      return;
+    }
+
     const nextSession = await importGlobalActiveReviewSession();
     if (nextSession) {
       if (shouldKeepCurrentSession(nextSession, sessionRef.current)) {
         setError("Agent session has no matching changed files. Current review kept.");
         return;
       }
+      if (currentRepoPath && !sameRepoPath(nextSession.repo.root, currentRepoPath)) {
+        return;
+      }
+      lastSeenActiveManifest.current = activeSession.manifestPath;
       applySession(nextSession);
       void loadRefsForRepo(nextSession.repo.root, {
         applyDefaults: false,
@@ -612,13 +709,20 @@ function App() {
 
   const openRepoPath = useCallback(
     (path: string) => {
+      clearCurrentReviewSurface();
       setRepoPath(path);
       setRepoRefs(null);
       setBaseRef("");
       setHeadRef("");
-      void loadRefsForRepo(path, { applyDefaults: true });
+      setCommitRef("HEAD");
+      setRangeFromRef("");
+      setRangeToRef("HEAD");
+      setPullRequestNumber(null);
+      setPullRequestInput("");
+      setTargetKind("workingTree");
+      void loadRefsForRepo(path, { applyDefaults: true, loadActive: false });
     },
-    [loadRefsForRepo],
+    [clearCurrentReviewSurface, loadRefsForRepo],
   );
 
   const pickRepo = useCallback(async () => {
@@ -781,13 +885,17 @@ function App() {
 
   const createSession = useCallback(() => {
     const currentSession = sessionRef.current;
+    if (currentSession?.target.kind === "pullRequest") {
+      void prContext.refresh();
+      void inbox.refresh();
+    }
     if (currentSession?.order.source === "agent" && currentSession.order.manifestPath) {
       void refreshAgentSession(currentSession.order.manifestPath);
       return;
     }
 
     void startSession();
-  }, [refreshAgentSession, startSession]);
+  }, [inbox.refresh, prContext.refresh, refreshAgentSession, startSession]);
 
   const startTargetSession = useCallback(
     (target: ReviewTargetRequest, refs?: { baseRef?: string; headRef?: string }) => {
@@ -1395,10 +1503,7 @@ function App() {
             } else if ("expandSection" in target) {
               patchFileState(target.fileId, { privateNote: "" });
             } else {
-              const fs = workspaceState[target.fileId];
-              const next = { ...(fs?.threadReplies ?? {}) };
-              delete next[target.threadId];
-              patchFileState(target.fileId, { threadReplies: next });
+              deleteThreadReply(target.fileId, target.threadId, target.draftId);
             }
           }}
           onJumpToThread={(target) => {
@@ -1453,6 +1558,8 @@ function App() {
               <section className="flex h-full min-h-0 flex-col bg-[var(--rd-ink)]">
                 <div className="min-h-0 flex-1">
                   <DiffCanvas
+                    repoRoot={session.repo.root}
+                    diffTarget={session.patchArtifact.diffTarget}
                     file={activeFile}
                     fileState={activeFileState}
                     jumpTarget={jumpTarget}
@@ -1469,6 +1576,7 @@ function App() {
                     expandedThreadId={expandedThreadId}
                     onExpandThread={setExpandedThreadId}
                     onReplyThread={saveThreadReply}
+                    onDeleteThreadReply={deleteThreadReply}
                   />
                 </div>
               </section>
@@ -1505,9 +1613,6 @@ function App() {
                     fileId: file.id,
                     requestedAt: Date.now(),
                   });
-                }}
-                onOpenAllThreads={() => {
-                  // No-op for now: user can click the threads pill in the top bar
                 }}
               />
             </ResizablePanel>
@@ -1588,7 +1693,10 @@ function App() {
             workspaceState={workspaceState}
             prContext={prContext.context}
             onClose={() => setPublishOpen(false)}
-            onPublished={(_response: PublishReviewResponse) => {
+            onPublished={(response: PublishReviewResponse) => {
+              updateWorkspaceState((current) =>
+                clearPublishedLocalDrafts(current, session, response),
+              );
               void inbox.refresh();
               void prContext.refresh();
             }}
@@ -1619,12 +1727,79 @@ function countPublishableDrafts(state: ReviewWorkspaceState): number {
       if (c.visibility === "review") n++;
     }
     if (fs.threadReplies) {
-      for (const reply of Object.values(fs.threadReplies)) {
-        if (reply.trim()) n++;
-      }
+      n += countThreadReplyDrafts(fs.threadReplies);
     }
   }
   return n;
+}
+
+function clearPublishedLocalDrafts(
+  state: ReviewWorkspaceState,
+  session: ReviewSession,
+  response: PublishReviewResponse,
+): ReviewWorkspaceState {
+  if (session.target.kind !== "pullRequest") return state;
+  const prNumber = session.target.number ?? null;
+  if (prNumber === null || response.postedFingerprints.length === 0) return state;
+
+  const accepted = new Set(response.postedFingerprints);
+  let changed = false;
+  const next: ReviewWorkspaceState = {};
+
+  for (const [fileId, fileState] of Object.entries(state)) {
+    const inlineComments = fileState.inlineComments ?? [];
+    const keptInlineComments = inlineComments.filter((comment) => {
+      if (comment.visibility !== "review") return true;
+      const line = comment.endLine ?? comment.startLine ?? 0;
+      const fingerprint = fingerprintInline(
+        {
+          path: comment.path,
+          line,
+          side: comment.side === "old" ? "LEFT" : "RIGHT",
+          startLine: comment.startLine ?? null,
+          body: comment.body,
+        },
+        prNumber,
+        response.headSha,
+      );
+      return !accepted.has(fingerprint);
+    });
+
+    const keptReplies: ThreadReplyDraftMap = {};
+    const threadReplies = normalizeThreadReplyMap(fileState.threadReplies);
+    for (const [threadId, drafts] of Object.entries(threadReplies)) {
+      const kept = drafts.filter((draft) => {
+        const fingerprint = fingerprintThreadReply(
+          threadId,
+          draft.body,
+          prNumber,
+          response.headSha,
+        );
+        return !accepted.has(fingerprint);
+      });
+      if (kept.length > 0) {
+        keptReplies[threadId] = kept;
+      }
+    }
+
+    const inlineChanged = keptInlineComments.length !== inlineComments.length;
+    const replyChanged =
+      Object.values(keptReplies).reduce((count, drafts) => count + drafts.length, 0) !==
+      Object.values(threadReplies).reduce((count, drafts) => count + drafts.length, 0);
+
+    if (inlineChanged || replyChanged) {
+      changed = true;
+      next[fileId] = {
+        ...fileState,
+        inlineComments: keptInlineComments,
+        threadReplies: keptReplies,
+      };
+    } else {
+      next[fileId] = fileState;
+    }
+  }
+
+  return changed ? next : state;
 }
 
 function CenterModeToggle({
@@ -1810,6 +1985,14 @@ function timestampValue(value?: string | null) {
   }
   const timestamp = new Date(value).getTime();
   return Number.isNaN(timestamp) ? 0 : timestamp;
+}
+
+function sameRepoPath(left: string, right: string) {
+  return normalizeRepoPath(left) === normalizeRepoPath(right);
+}
+
+function normalizeRepoPath(value: string) {
+  return value.trim().replace(/[\\/]+$/, "");
 }
 
 function shouldKeepCurrentSession(

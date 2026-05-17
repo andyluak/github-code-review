@@ -15,13 +15,23 @@ function fnv1a(input: string): string {
 }
 
 export function fingerprintInline(
-  comment: { path: string; line: number; side?: string | null; body: string },
+  comment: {
+    path: string;
+    line: number;
+    side?: string | null;
+    startLine?: number | null;
+    body: string;
+  },
   prNumber: number,
   headSha: string,
 ): string {
   const side = comment.side ?? "RIGHT";
+  const range =
+    comment.startLine && comment.startLine !== comment.line
+      ? `|${comment.startLine}-${comment.line}`
+      : `|${comment.line}`;
   return fnv1a(
-    `inline|${prNumber}|${headSha}|${comment.path}|${side}|${comment.line}|${normalize(comment.body)}`,
+    `inline|${prNumber}|${headSha}|${comment.path}|${side}${range}|${normalize(comment.body)}`,
   );
 }
 

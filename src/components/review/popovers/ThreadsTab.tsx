@@ -1,5 +1,10 @@
 import { useMemo, useState } from "react";
 import { compactPath } from "@/lib/format";
+import {
+  threadCommentAuthorLabel,
+  threadJumpLine,
+  threadLineLabel,
+} from "@/lib/github-labels";
 import { relativeTime } from "@/lib/format-time";
 import type { PullRequestContext, ReviewThread } from "@/types/github";
 
@@ -74,7 +79,7 @@ export function ThreadsTab({ prContext, error, onJump }: Props) {
                       onClick={() =>
                         onJump({
                           path: t.path,
-                          line: t.line ?? t.originalLine ?? 0,
+                          line: threadJumpLine(t),
                         })
                       }
                       className="flex w-full items-start gap-2 rounded px-2 py-1.5 text-left hover:bg-[var(--rd-ink-2)]"
@@ -89,11 +94,11 @@ export function ThreadsTab({ prContext, error, onJump }: Props) {
                         }
                       />
                       <span className="font-mono text-[10px] text-[var(--rd-pencil)]">
-                        L{t.line ?? t.originalLine ?? "?"}
+                        {threadLineLabel(t)}
                       </span>
                       <span className="min-w-0 flex-1">
                         <span className="block font-mono text-[9.5px] text-[var(--rd-graphite)]">
-                          {t.comments[0]?.author ?? "unknown"} ·{" "}
+                          {threadCommentAuthorLabel(t.comments[0])} ·{" "}
                           {t.comments[0]?.createdAt ? relativeTime(t.comments[0].createdAt) : ""}
                         </span>
                         <span className="line-clamp-2 text-[11px] text-[var(--rd-cream)]">
