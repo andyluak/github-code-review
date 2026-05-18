@@ -54,7 +54,17 @@ Reviewer progress and notes are app-data files too:
 ```
 
 This file owns viewed/reviewed status, private notes, publishable drafts, and
-inline comments. Browser `localStorage` is only a legacy migration source.
+inline comments. Review history, the last-opened review pointer, session
+snapshots, and per-session active file pointers are file-backed too:
+
+```txt
+~/Library/Application Support/Review Desk/ui-state/review-history.json
+~/Library/Application Support/Review Desk/ui-state/last-review-session.json
+~/Library/Application Support/Review Desk/ui-state/review-session-snapshots/<session-id>.json
+~/Library/Application Support/Review Desk/ui-state/active-review-files/<session-id>.json
+```
+
+Browser `localStorage` is only a legacy migration source.
 
 Review maps are optional app-data artifacts attached to sessions:
 

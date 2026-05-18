@@ -209,7 +209,7 @@ const FileRow = memo(function FileRow({
     <button
       type="button"
       onClick={() => onSelectFile(file.id)}
-      className="group block w-full px-5 py-1.5 text-left"
+      className="group block w-full px-5 py-2 text-left"
     >
       <div className="flex min-w-0 items-start gap-3">
         <span
@@ -440,7 +440,7 @@ function estimateQueueRowSize(row: QueueVirtualRow | undefined) {
   if (row.kind === "group") {
     return 34;
   }
-  return row.showReason && row.record.file.reviewReason ? 64 : 42;
+  return row.showReason && row.record.file.reviewReason ? 68 : 46;
 }
 
 function matchesStatus(status: ViewedStatus, filter: RailStatusFilter) {

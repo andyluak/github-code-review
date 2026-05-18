@@ -149,12 +149,8 @@ function App() {
   const [pullRequestNumber, setPullRequestNumber] = useState<number | null>(null);
   const [pullRequestInput, setPullRequestInput] = useState("");
   const [repoRefs, setRepoRefs] = useState<RepoRefs | null>(null);
-  const [recentRepos, setRecentRepos] = useState<RecentRepo[]>(() =>
-    loadRecentRepos(),
-  );
-  const [reviewHistory, setReviewHistory] = useState<ReviewHistoryItem[]>(() =>
-    loadReviewHistory(),
-  );
+  const [recentRepos, setRecentRepos] = useState<RecentRepo[]>([]);
+  const [reviewHistory, setReviewHistory] = useState<ReviewHistoryItem[]>([]);
   const [session, setSession] = useState<ReviewSession | null>(null);
   const [centerMode, setCenterMode] = useState<CenterMode>("diff");
   const [activeFileId, setActiveFileId] = useState<string | null>(null);
@@ -234,6 +230,7 @@ function App() {
   };
   const refLoadId = useRef(0);
   const sessionLoadId = useRef(0);
+  const sessionApplyId = useRef(0);
   const diagramLoadId = useRef(0);
   const workspaceLoadId = useRef(0);
   const lastSeenActiveManifest = useRef<string | null>(null);
@@ -306,7 +303,9 @@ function App() {
 
   useEffect(() => {
     if (session) {
-      rememberActiveReviewFileId(session.id, activeFileId);
+      void rememberActiveReviewFileId(session.id, activeFileId).catch((caught) => {
+        setError(caught instanceof Error ? caught.message : String(caught));
+      });
     }
   }, [activeFileId, session]);
 
@@ -485,6 +484,7 @@ function App() {
     }
 
     sessionLoadId.current += 1;
+    sessionApplyId.current += 1;
     workspaceLoadId.current += 1;
     diagramLoadId.current += 1;
     currentSessionOpenedAtRef.current = Date.now();
@@ -528,7 +528,7 @@ function App() {
       });
   }, []);
 
-  const applySession = useCallback((nextSession: ReviewSession) => {
+  const applySession = useCallback(async (nextSession: ReviewSession) => {
     const previousSession = sessionRef.current;
     const previousActiveFileId = activeFileIdRef.current;
     if (
@@ -541,7 +541,13 @@ function App() {
       ).catch(() => {});
     }
 
-    const savedActiveFileId = loadActiveReviewFileId(nextSession.id);
+    const applyRequestId = sessionApplyId.current + 1;
+    sessionApplyId.current = applyRequestId;
+    const savedActiveFileId = await loadActiveReviewFileId(nextSession.id);
+    if (applyRequestId !== sessionApplyId.current) {
+      return;
+    }
+
     const fallbackActiveFileId = chooseActiveFileId(
       nextSession,
       previousSession,
@@ -576,13 +582,24 @@ function App() {
         : {},
     );
     setActiveFileId(fallbackActiveFileId);
-    setReviewHistory(rememberReviewSession(nextSession));
 
     if (nextSession.order.manifestPath) {
       lastSeenActiveManifest.current = nextSession.order.manifestPath;
     }
 
     void loadDiagramForSession(nextSession);
+
+    void rememberReviewSession(nextSession)
+      .then((history) => {
+        if (sessionApplyId.current === applyRequestId) {
+          setReviewHistory(history);
+        }
+      })
+      .catch((caught) => {
+        if (sessionApplyId.current === applyRequestId) {
+          setError(caught instanceof Error ? caught.message : String(caught));
+        }
+      });
 
     void loadWorkspaceState(nextSession)
       .then((saved) => {
@@ -638,7 +655,7 @@ function App() {
           setError("Agent session has no matching changed files. Current review kept.");
           return;
         }
-        applySession(nextSession);
+        await applySession(nextSession);
       }
     },
     [applySession],
@@ -667,7 +684,7 @@ function App() {
 
         setRepoPath(refs.root);
         setRepoRefs(refs);
-        setRecentRepos(rememberRepo(refs));
+        setRecentRepos(await rememberRepo(refs));
 
         if (options?.applyDefaults) {
           const defaults = suggestDefaultRefs(refs);
@@ -731,7 +748,7 @@ function App() {
         return;
       }
       lastSeenActiveManifest.current = activeSession.manifestPath;
-      applySession(nextSession);
+      await applySession(nextSession);
       void loadRefsForRepo(nextSession.repo.root, {
         applyDefaults: false,
         loadActive: false,
@@ -794,7 +811,7 @@ function App() {
 
     try {
       const nextSession = await importReviewSession({ manifestPath: selected });
-      applySession(nextSession);
+      await applySession(nextSession);
       void loadRefsForRepo(nextSession.repo.root, { applyDefaults: false });
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
@@ -819,7 +836,7 @@ function App() {
           setError("Agent session has no matching changed files. Current review kept.");
           return;
         }
-        applySession(nextSession);
+        await applySession(nextSession);
         void loadRefsForRepo(nextSession.repo.root, {
           applyDefaults: false,
           loadActive: false,
@@ -872,12 +889,12 @@ function App() {
             selectedPullRequest,
           });
 
-        const cachedSession = loadReviewSessionSnapshotForTarget({
+        const cachedSession = await loadReviewSessionSnapshotForTarget({
           repoPath: nextRepoPath,
           target,
         });
         if (cachedSession && requestId === sessionLoadId.current) {
-          applySession(cachedSession);
+          await applySession(cachedSession);
         }
 
         const nextSession = await createReviewSession({
@@ -889,7 +906,7 @@ function App() {
         if (requestId !== sessionLoadId.current) {
           return;
         }
-        applySession(nextSession);
+        await applySession(nextSession);
       } catch (caught) {
         if (requestId === sessionLoadId.current) {
           setError(caught instanceof Error ? caught.message : String(caught));
@@ -984,11 +1001,11 @@ function App() {
   ]);
 
   const resumeReview = useCallback(
-    (item: ReviewHistoryItem) => {
-      const cachedSession = loadReviewSessionSnapshot(item.id);
+    async (item: ReviewHistoryItem) => {
+      const cachedSession = await loadReviewSessionSnapshot(item.id);
 
       if (cachedSession) {
-        applySession(cachedSession);
+        await applySession(cachedSession);
       } else {
         setRepoPath(item.repoRoot);
         setBaseRef(item.baseRef ?? "");
@@ -1028,11 +1045,19 @@ function App() {
   );
 
   const deleteHistoryItem = useCallback((item: ReviewHistoryItem) => {
-    setReviewHistory(deleteReviewHistoryItem(item.id));
+    void deleteReviewHistoryItem(item.id)
+      .then(setReviewHistory)
+      .catch((caught) => {
+        setError(caught instanceof Error ? caught.message : String(caught));
+      });
   }, []);
 
   const clearHistory = useCallback(() => {
-    setReviewHistory(clearReviewHistory());
+    void clearReviewHistory()
+      .then(setReviewHistory)
+      .catch((caught) => {
+        setError(caught instanceof Error ? caught.message : String(caught));
+      });
   }, []);
 
   const refreshRefs = useCallback(() => {
@@ -1379,25 +1404,51 @@ function App() {
   });
 
   useEffect(() => {
-    const lastReviewSession = loadLastReviewSessionSnapshot();
-    if (lastReviewSession) {
-      applySession(lastReviewSession);
-      void loadRefsForRepo(lastReviewSession.repo.root, {
-        applyDefaults: false,
-        loadActive: false,
-      });
-      return;
+    let cancelled = false;
+
+    async function restoreStartupState() {
+      try {
+        const [repos, history] = await Promise.all([
+          loadRecentRepos(),
+          loadReviewHistory(),
+        ]);
+        if (cancelled) return;
+
+        setRecentRepos(repos);
+        setReviewHistory(history);
+
+        const lastReviewSession = await loadLastReviewSessionSnapshot();
+        if (cancelled) return;
+        if (lastReviewSession) {
+          await applySession(lastReviewSession);
+          if (cancelled) return;
+          void loadRefsForRepo(lastReviewSession.repo.root, {
+            applyDefaults: false,
+            loadActive: false,
+          });
+          return;
+        }
+
+        const lastRepoPath = await loadLastRepoPath();
+        if (cancelled) return;
+        if (lastRepoPath) {
+          setRepoPath(lastRepoPath);
+          void loadRefsForRepo(lastRepoPath, { applyDefaults: true });
+        } else {
+          await tryLoadGlobalActiveSession();
+        }
+      } catch (caught) {
+        if (!cancelled) {
+          setError(caught instanceof Error ? caught.message : String(caught));
+        }
+      }
     }
 
-    const lastRepoPath = loadLastRepoPath();
-    if (lastRepoPath) {
-      setRepoPath(lastRepoPath);
-      void loadRefsForRepo(lastRepoPath, { applyDefaults: true });
-    } else {
-      void tryLoadGlobalActiveSession().catch((caught) => {
-        setError(caught instanceof Error ? caught.message : String(caught));
-      });
-    }
+    void restoreStartupState();
+
+    return () => {
+      cancelled = true;
+    };
   }, [applySession, loadRefsForRepo, tryLoadGlobalActiveSession]);
 
   useEffect(() => {
@@ -1547,8 +1598,11 @@ function App() {
           onSelectRepo={openRepoPath}
           onRefreshRefs={refreshRefs}
           onClearRecentRepos={() => {
-            clearRecentRepos();
-            setRecentRepos([]);
+            void clearRecentRepos()
+              .then(() => setRecentRepos([]))
+              .catch((caught) => {
+                setError(caught instanceof Error ? caught.message : String(caught));
+              });
           }}
           onTargetKindChange={setTargetKind}
           onBaseRefChange={setBaseRef}

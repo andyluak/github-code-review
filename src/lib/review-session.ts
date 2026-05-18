@@ -31,6 +31,21 @@ import {
   normalizeThreadReplyMap,
 } from "@/lib/thread-reply-drafts";
 
+type JsonArrayPersistenceResponse<T> = {
+  exists: boolean;
+  value?: T[] | null;
+};
+
+type JsonPersistenceResponse<T> = {
+  exists: boolean;
+  value?: T | null;
+};
+
+type StringPersistenceResponse = {
+  exists: boolean;
+  value?: string | null;
+};
+
 export async function createReviewSession(
   request: CreateReviewSessionRequest,
 ): Promise<ReviewSession> {
@@ -173,15 +188,29 @@ export async function saveWorkspaceState(
   await invoke<void>("save_review_workspace_state", { request });
 }
 
-export function loadRecentRepos(): RecentRepo[] {
-  return readJson<RecentRepo[]>(RECENT_REPOS_KEY, []);
+export async function loadRecentRepos(): Promise<RecentRepo[]> {
+  const response = await invoke<JsonArrayPersistenceResponse<RecentRepo>>(
+    "load_review_recent_repos",
+  );
+  if (response.exists) {
+    return response.value ?? [];
+  }
+
+  const legacyRepos = readJson<RecentRepo[]>(RECENT_REPOS_KEY, []);
+  if (legacyRepos.length > 0) {
+    await saveReviewRecentRepos(legacyRepos);
+    window.localStorage.removeItem(RECENT_REPOS_KEY);
+  }
+  return legacyRepos;
 }
 
-export function clearRecentRepos(): void {
+export async function clearRecentRepos(): Promise<void> {
+  await invoke<void>("clear_review_recent_repos");
   window.localStorage.removeItem(RECENT_REPOS_KEY);
+  window.localStorage.removeItem(LAST_REPO_KEY);
 }
 
-export function rememberRepo(refs: RepoRefs): RecentRepo[] {
+export async function rememberRepo(refs: RepoRefs): Promise<RecentRepo[]> {
   const nextRepo: RecentRepo = {
     root: refs.root,
     requestedPath: refs.requestedPath,
@@ -190,32 +219,64 @@ export function rememberRepo(refs: RepoRefs): RecentRepo[] {
     headSha: refs.headSha,
     lastOpenedAt: new Date().toISOString(),
   };
+  const currentRepos = await loadRecentRepos();
   const nextRepos = [
     nextRepo,
-    ...loadRecentRepos().filter((repo) => repo.root !== nextRepo.root),
+    ...currentRepos.filter((repo) => repo.root !== nextRepo.root),
   ].slice(0, 10);
 
-  window.localStorage.setItem(RECENT_REPOS_KEY, JSON.stringify(nextRepos));
-  window.localStorage.setItem(LAST_REPO_KEY, refs.root);
+  await saveReviewRecentRepos(nextRepos);
+  await invoke<void>("save_last_repo_path", {
+    request: { repoPath: refs.root },
+  });
+  window.localStorage.removeItem(RECENT_REPOS_KEY);
+  window.localStorage.removeItem(LAST_REPO_KEY);
   return nextRepos;
 }
 
-export function loadLastRepoPath(): string {
-  return window.localStorage.getItem(LAST_REPO_KEY) ?? "";
+export async function loadLastRepoPath(): Promise<string> {
+  const response = await invoke<StringPersistenceResponse>("load_last_repo_path");
+  if (response.exists) {
+    return response.value ?? "";
+  }
+
+  const legacyPath = window.localStorage.getItem(LAST_REPO_KEY) ?? "";
+  if (legacyPath) {
+    await invoke<void>("save_last_repo_path", {
+      request: { repoPath: legacyPath },
+    });
+    window.localStorage.removeItem(LAST_REPO_KEY);
+  }
+  return legacyPath;
 }
 
-export function loadReviewHistory(): ReviewHistoryItem[] {
-  const history = readJson<ReviewHistoryItem[]>(REVIEW_HISTORY_KEY, []);
+export async function loadReviewHistory(): Promise<ReviewHistoryItem[]> {
+  const response = await invoke<JsonArrayPersistenceResponse<ReviewHistoryItem>>(
+    "load_review_history",
+  );
+  const history = response.exists
+    ? (response.value ?? [])
+    : readJson<ReviewHistoryItem[]>(REVIEW_HISTORY_KEY, []);
   const nextHistory = dedupeReviewHistory(history);
   if (nextHistory.length !== history.length) {
-    window.localStorage.setItem(REVIEW_HISTORY_KEY, JSON.stringify(nextHistory));
-    pruneReviewSessionSnapshots(nextHistory);
+    await saveReviewHistoryRecords(nextHistory);
+  } else if (!response.exists && nextHistory.length > 0) {
+    await saveReviewHistoryRecords(nextHistory);
   }
+
+  if (!response.exists && nextHistory.length > 0) {
+    await migrateLegacyReviewSessionStorage(nextHistory.map((item) => item.id));
+    window.localStorage.removeItem(REVIEW_HISTORY_KEY);
+  }
+
+  await pruneReviewSessionSnapshots(nextHistory);
   return nextHistory;
 }
 
-export function rememberReviewSession(session: ReviewSession): ReviewHistoryItem[] {
-  const currentHistory = loadReviewHistory();
+export async function rememberReviewSession(
+  session: ReviewSession,
+): Promise<ReviewHistoryItem[]> {
+  const currentHistory = await loadReviewHistory();
   const now = new Date().toISOString();
   const nextItem: ReviewHistoryItem = {
     id: session.id,
@@ -243,11 +304,11 @@ export function rememberReviewSession(session: ReviewSession): ReviewHistoryItem
     (item) => reviewHistoryKey(item) === nextKey && item.orderSource === "agent",
   );
 
-  window.localStorage.setItem(LAST_REVIEW_SESSION_KEY, session.id);
-  saveReviewSessionSnapshot(session);
+  await saveReviewSessionSnapshot(session);
+  await saveLastReviewSession(session.id);
 
   if (nextItem.orderSource === "git" && existingAgent) {
-    pruneReviewSessionSnapshots(currentHistory);
+    await pruneReviewSessionSnapshots(currentHistory);
     return currentHistory;
   }
 
@@ -258,67 +319,103 @@ export function rememberReviewSession(session: ReviewSession): ReviewHistoryItem
     ),
   ].slice(0, 20);
 
-  window.localStorage.setItem(REVIEW_HISTORY_KEY, JSON.stringify(nextHistory));
-  pruneReviewSessionSnapshots(nextHistory);
+  await saveReviewHistoryRecords(nextHistory);
+  await pruneReviewSessionSnapshots(nextHistory);
   return nextHistory;
 }
 
-export function deleteReviewHistoryItem(sessionId: string): ReviewHistoryItem[] {
-  const nextHistory = loadReviewHistory().filter((item) => item.id !== sessionId);
-  window.localStorage.setItem(REVIEW_HISTORY_KEY, JSON.stringify(nextHistory));
-  deleteReviewSessionSnapshot(sessionId);
+export async function deleteReviewHistoryItem(
+  sessionId: string,
+): Promise<ReviewHistoryItem[]> {
+  const nextHistory = (await loadReviewHistory()).filter((item) => item.id !== sessionId);
+  await saveReviewHistoryRecords(nextHistory);
+  await deleteReviewSessionSnapshot(sessionId);
+  await pruneReviewSessionSnapshots(nextHistory);
   return nextHistory;
 }
 
-export function clearReviewHistory(): ReviewHistoryItem[] {
-  const currentHistory = loadReviewHistory();
-  window.localStorage.removeItem(REVIEW_HISTORY_KEY);
-  window.localStorage.removeItem(LAST_REVIEW_SESSION_KEY);
-  for (const item of currentHistory) {
-    deleteReviewSessionSnapshot(item.id);
-  }
-  pruneReviewSessionSnapshots([]);
+export async function clearReviewHistory(): Promise<ReviewHistoryItem[]> {
+  await invoke<void>("clear_review_history");
+  clearLegacyReviewHistoryStorage();
   return [];
 }
 
-export function loadReviewSessionSnapshot(sessionId: string): ReviewSession | null {
-  return readJson<ReviewSession | null>(reviewSessionSnapshotKey(sessionId), null);
+export async function loadReviewSessionSnapshot(
+  sessionId: string,
+): Promise<ReviewSession | null> {
+  const response = await invoke<JsonPersistenceResponse<ReviewSession>>(
+    "load_review_session_snapshot",
+    { request: { sessionId } },
+  );
+  if (response.exists) {
+    return response.value ?? null;
+  }
+
+  const legacySnapshot = readJson<ReviewSession | null>(
+    reviewSessionSnapshotKey(sessionId),
+    null,
+  );
+  if (legacySnapshot) {
+    await saveReviewSessionSnapshot(legacySnapshot);
+    removeLegacyReviewSessionStorage(sessionId);
+  }
+  return legacySnapshot;
 }
 
-export function loadLastReviewSessionSnapshot(): ReviewSession | null {
+export async function loadLastReviewSessionSnapshot(): Promise<ReviewSession | null> {
+  const response = await invoke<JsonPersistenceResponse<ReviewSession>>(
+    "load_last_review_session_snapshot",
+  );
+  if (response.exists) {
+    return response.value ?? null;
+  }
+
   const sessionId = window.localStorage.getItem(LAST_REVIEW_SESSION_KEY);
   if (!sessionId) {
     return null;
   }
 
-  const snapshot = loadReviewSessionSnapshot(sessionId);
-  if (!snapshot) {
-    window.localStorage.removeItem(LAST_REVIEW_SESSION_KEY);
+  const snapshot = await loadReviewSessionSnapshot(sessionId);
+  if (snapshot) {
+    await saveLastReviewSession(sessionId);
   }
+  window.localStorage.removeItem(LAST_REVIEW_SESSION_KEY);
   return snapshot;
 }
 
-export function loadActiveReviewFileId(sessionId: string): string | null {
-  return window.localStorage.getItem(activeReviewFileKey(sessionId));
-}
-
-export function rememberActiveReviewFileId(sessionId: string, fileId: string | null) {
-  const key = activeReviewFileKey(sessionId);
-  if (!fileId) {
-    window.localStorage.removeItem(key);
-    return;
+export async function loadActiveReviewFileId(sessionId: string): Promise<string | null> {
+  const response = await invoke<StringPersistenceResponse>("load_active_review_file", {
+    request: { sessionId },
+  });
+  if (response.exists) {
+    return response.value ?? null;
   }
-  window.localStorage.setItem(key, fileId);
+
+  const legacyFileId = window.localStorage.getItem(activeReviewFileKey(sessionId));
+  if (legacyFileId) {
+    await rememberActiveReviewFileId(sessionId, legacyFileId);
+  }
+  return legacyFileId;
 }
 
-export function loadReviewSessionSnapshotForTarget({
+export async function rememberActiveReviewFileId(
+  sessionId: string,
+  fileId: string | null,
+) {
+  await invoke<void>("save_active_review_file", {
+    request: { sessionId, fileId },
+  });
+  window.localStorage.removeItem(activeReviewFileKey(sessionId));
+}
+
+export async function loadReviewSessionSnapshotForTarget({
   repoPath,
   target,
 }: {
   repoPath: string;
   target: ReviewTargetRequest;
-}): ReviewSession | null {
-  const historyItem = loadReviewHistory().find((item) => {
+}): Promise<ReviewSession | null> {
+  const historyItem = (await loadReviewHistory()).find((item) => {
     if (item.orderSource !== "git") return false;
     if (item.repoRoot !== repoPath && item.requestedPath !== repoPath) return false;
     return targetMatchesRequest(item.target, target);
@@ -327,36 +424,107 @@ export function loadReviewSessionSnapshotForTarget({
   return historyItem ? loadReviewSessionSnapshot(historyItem.id) : null;
 }
 
-export function saveReviewSessionSnapshot(session: ReviewSession) {
-  try {
-    window.localStorage.setItem(
-      reviewSessionSnapshotKey(session.id),
-      JSON.stringify(session),
-    );
-  } catch {
-    // Snapshots are an acceleration cache; history/state should keep working if storage is full.
-  }
+export async function saveReviewSessionSnapshot(session: ReviewSession): Promise<void> {
+  await invoke<void>("save_review_session_snapshot", {
+    request: { sessionId: session.id, session },
+  });
+  window.localStorage.removeItem(reviewSessionSnapshotKey(session.id));
 }
 
-export function pruneReviewSessionSnapshots(history = loadReviewHistory()) {
+export async function pruneReviewSessionSnapshots(history: ReviewHistoryItem[]) {
   const activeIds = new Set(history.map((item) => item.id));
   const lastReviewSessionId = window.localStorage.getItem(LAST_REVIEW_SESSION_KEY);
   if (lastReviewSessionId) {
     activeIds.add(lastReviewSessionId);
   }
+  await invoke<void>("prune_review_session_snapshots", {
+    request: { activeSessionIds: [...activeIds] },
+  });
+  pruneLegacyReviewSessionSnapshots(activeIds);
+}
+
+async function saveReviewRecentRepos(repos: RecentRepo[]): Promise<void> {
+  await invoke<void>("save_review_recent_repos", { request: { repos } });
+}
+
+async function saveReviewHistoryRecords(history: ReviewHistoryItem[]): Promise<void> {
+  await invoke<void>("save_review_history", { request: { history } });
+}
+
+async function saveLastReviewSession(sessionId: string): Promise<void> {
+  await invoke<void>("save_last_review_session", { request: { sessionId } });
+}
+
+async function deleteReviewSessionSnapshot(sessionId: string): Promise<void> {
+  await invoke<void>("delete_review_session_snapshot", {
+    request: { sessionId },
+  });
+  removeLegacyReviewSessionStorage(sessionId);
+}
+
+async function migrateLegacyReviewSessionStorage(sessionIds: string[]): Promise<void> {
+  for (const sessionId of sessionIds) {
+    const snapshot = readJson<ReviewSession | null>(
+      reviewSessionSnapshotKey(sessionId),
+      null,
+    );
+    if (snapshot) {
+      await saveReviewSessionSnapshot(snapshot);
+    }
+
+    const activeFileId = window.localStorage.getItem(activeReviewFileKey(sessionId));
+    if (activeFileId) {
+      await rememberActiveReviewFileId(sessionId, activeFileId);
+    }
+
+    removeLegacyReviewSessionStorage(sessionId);
+  }
+}
+
+function pruneLegacyReviewSessionSnapshots(activeIds: Set<string>) {
   const staleKeys: string[] = [];
 
   for (let index = 0; index < window.localStorage.length; index += 1) {
     const key = window.localStorage.key(index);
+    if (!key) continue;
     if (
-      key?.startsWith(REVIEW_SESSION_SNAPSHOT_PREFIX) &&
+      key.startsWith(REVIEW_SESSION_SNAPSHOT_PREFIX) &&
       !activeIds.has(key.slice(REVIEW_SESSION_SNAPSHOT_PREFIX.length))
+    ) {
+      staleKeys.push(key);
+    }
+    if (
+      key.startsWith(ACTIVE_REVIEW_FILE_PREFIX) &&
+      !activeIds.has(key.slice(ACTIVE_REVIEW_FILE_PREFIX.length))
     ) {
       staleKeys.push(key);
     }
   }
 
   for (const key of staleKeys) {
+    window.localStorage.removeItem(key);
+  }
+}
+
+function removeLegacyReviewSessionStorage(sessionId: string) {
+  window.localStorage.removeItem(reviewSessionSnapshotKey(sessionId));
+  window.localStorage.removeItem(activeReviewFileKey(sessionId));
+}
+
+function clearLegacyReviewHistoryStorage() {
+  const keys: string[] = [];
+  for (let index = 0; index < window.localStorage.length; index += 1) {
+    const key = window.localStorage.key(index);
+    if (
+      key === REVIEW_HISTORY_KEY ||
+      key === LAST_REVIEW_SESSION_KEY ||
+      key?.startsWith(REVIEW_SESSION_SNAPSHOT_PREFIX) ||
+      key?.startsWith(ACTIVE_REVIEW_FILE_PREFIX)
+    ) {
+      keys.push(key);
+    }
+  }
+  for (const key of keys) {
     window.localStorage.removeItem(key);
   }
 }
@@ -698,14 +866,6 @@ function storageKey(sessionId: string) {
 
 function reviewSessionSnapshotKey(sessionId: string) {
   return `${REVIEW_SESSION_SNAPSHOT_PREFIX}${sessionId}`;
-}
-
-function deleteReviewSessionSnapshot(sessionId: string) {
-  window.localStorage.removeItem(reviewSessionSnapshotKey(sessionId));
-  window.localStorage.removeItem(activeReviewFileKey(sessionId));
-  if (window.localStorage.getItem(LAST_REVIEW_SESSION_KEY) === sessionId) {
-    window.localStorage.removeItem(LAST_REVIEW_SESSION_KEY);
-  }
 }
 
 function activeReviewFileKey(sessionId: string) {

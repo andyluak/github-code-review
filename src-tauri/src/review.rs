@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
     collections::{hash_map::DefaultHasher, HashSet, VecDeque},
     env, fs,
@@ -168,6 +168,77 @@ pub struct SaveReviewWorkspaceStateRequest {
     repo_path: String,
     session_id: String,
     state: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveReviewRecentReposRequest {
+    repos: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveLastRepoPathRequest {
+    repo_path: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveReviewHistoryRequest {
+    history: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewSessionIdRequest {
+    session_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveReviewSessionSnapshotRequest {
+    session_id: String,
+    session: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveLastReviewSessionRequest {
+    session_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveActiveReviewFileRequest {
+    session_id: String,
+    file_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PruneReviewSessionSnapshotsRequest {
+    active_session_ids: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JsonArrayPersistenceResponse {
+    exists: bool,
+    value: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JsonPersistenceResponse {
+    exists: bool,
+    value: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StringPersistenceResponse {
+    exists: bool,
+    value: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1053,6 +1124,156 @@ fn save_review_workspace_state_inner(
 }
 
 #[tauri::command]
+pub async fn load_review_recent_repos() -> Result<JsonArrayPersistenceResponse, String> {
+    crate::blocking::run("load_review_recent_repos", move || {
+        load_json_array_persistence(review_recent_repos_path()?)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn save_review_recent_repos(request: SaveReviewRecentReposRequest) -> Result<(), String> {
+    crate::blocking::run("save_review_recent_repos", move || {
+        write_json_file(&review_recent_repos_path()?, &request.repos)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn clear_review_recent_repos() -> Result<(), String> {
+    crate::blocking::run("clear_review_recent_repos", move || {
+        delete_file_if_exists(&review_recent_repos_path()?)?;
+        delete_file_if_exists(&review_last_repo_path()?)?;
+        Ok(())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn load_last_repo_path() -> Result<StringPersistenceResponse, String> {
+    crate::blocking::run("load_last_repo_path", move || {
+        load_string_persistence(review_last_repo_path()?)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn save_last_repo_path(request: SaveLastRepoPathRequest) -> Result<(), String> {
+    crate::blocking::run("save_last_repo_path", move || {
+        write_json_file(&review_last_repo_path()?, &request.repo_path)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn load_review_history() -> Result<JsonArrayPersistenceResponse, String> {
+    crate::blocking::run("load_review_history", move || {
+        load_json_array_persistence(review_history_path()?)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn save_review_history(request: SaveReviewHistoryRequest) -> Result<(), String> {
+    crate::blocking::run("save_review_history", move || {
+        write_json_file(&review_history_path()?, &request.history)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn clear_review_history() -> Result<(), String> {
+    crate::blocking::run("clear_review_history", move || {
+        delete_file_if_exists(&review_history_path()?)?;
+        delete_file_if_exists(&review_last_session_path()?)?;
+        delete_dir_if_exists(&review_session_snapshots_dir()?)?;
+        delete_dir_if_exists(&review_active_files_dir()?)?;
+        Ok(())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn load_review_session_snapshot(
+    request: ReviewSessionIdRequest,
+) -> Result<JsonPersistenceResponse, String> {
+    crate::blocking::run("load_review_session_snapshot", move || {
+        load_json_persistence(review_session_snapshot_path(&request.session_id)?)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn save_review_session_snapshot(
+    request: SaveReviewSessionSnapshotRequest,
+) -> Result<(), String> {
+    crate::blocking::run("save_review_session_snapshot", move || {
+        write_json_file(
+            &review_session_snapshot_path(&request.session_id)?,
+            &request.session,
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn delete_review_session_snapshot(request: ReviewSessionIdRequest) -> Result<(), String> {
+    crate::blocking::run("delete_review_session_snapshot", move || {
+        delete_review_session_snapshot_inner(&request.session_id)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn load_last_review_session_snapshot() -> Result<JsonPersistenceResponse, String> {
+    crate::blocking::run("load_last_review_session_snapshot", move || {
+        load_last_review_session_snapshot_inner()
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn save_last_review_session(request: SaveLastReviewSessionRequest) -> Result<(), String> {
+    crate::blocking::run("save_last_review_session", move || {
+        write_json_file(&review_last_session_path()?, &request.session_id)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn load_active_review_file(
+    request: ReviewSessionIdRequest,
+) -> Result<StringPersistenceResponse, String> {
+    crate::blocking::run("load_active_review_file", move || {
+        load_string_persistence(review_active_file_path(&request.session_id)?)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn save_active_review_file(request: SaveActiveReviewFileRequest) -> Result<(), String> {
+    crate::blocking::run("save_active_review_file", move || {
+        let path = review_active_file_path(&request.session_id)?;
+        if let Some(file_id) = request.file_id.filter(|value| !value.trim().is_empty()) {
+            write_json_file(&path, &file_id)
+        } else {
+            delete_file_if_exists(&path)
+        }
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn prune_review_session_snapshots(
+    request: PruneReviewSessionSnapshotsRequest,
+) -> Result<(), String> {
+    crate::blocking::run("prune_review_session_snapshots", move || {
+        prune_review_session_snapshots_inner(request)
+    })
+    .await
+}
+
+#[tauri::command]
 pub async fn load_review_diagram(
     request: LoadReviewDiagramRequest,
 ) -> Result<Option<serde_json::Value>, String> {
@@ -1343,6 +1564,45 @@ fn app_global_active_review_session_path() -> Option<PathBuf> {
     review_desk_data_dir().map(|data_dir| data_dir.join("active-session.json"))
 }
 
+fn review_ui_state_dir() -> Result<PathBuf, String> {
+    let Some(data_dir) = review_desk_data_dir() else {
+        return Err("Review Desk app data directory is unavailable".to_string());
+    };
+    Ok(data_dir.join("ui-state"))
+}
+
+fn review_recent_repos_path() -> Result<PathBuf, String> {
+    Ok(review_ui_state_dir()?.join("recent-repos.json"))
+}
+
+fn review_last_repo_path() -> Result<PathBuf, String> {
+    Ok(review_ui_state_dir()?.join("last-repo.json"))
+}
+
+fn review_history_path() -> Result<PathBuf, String> {
+    Ok(review_ui_state_dir()?.join("review-history.json"))
+}
+
+fn review_last_session_path() -> Result<PathBuf, String> {
+    Ok(review_ui_state_dir()?.join("last-review-session.json"))
+}
+
+fn review_session_snapshots_dir() -> Result<PathBuf, String> {
+    Ok(review_ui_state_dir()?.join("review-session-snapshots"))
+}
+
+fn review_active_files_dir() -> Result<PathBuf, String> {
+    Ok(review_ui_state_dir()?.join("active-review-files"))
+}
+
+fn review_session_snapshot_path(session_id: &str) -> Result<PathBuf, String> {
+    Ok(review_session_snapshots_dir()?.join(review_ui_state_file_name(session_id)?))
+}
+
+fn review_active_file_path(session_id: &str) -> Result<PathBuf, String> {
+    Ok(review_active_files_dir()?.join(review_ui_state_file_name(session_id)?))
+}
+
 fn review_workspace_state_path(repo_root: &Path, session_id: &str) -> Result<PathBuf, String> {
     let session_file_name = workspace_state_file_name(session_id)?;
     let Some(data_dir) = review_desk_data_dir() else {
@@ -1423,15 +1683,26 @@ fn workspace_state_file_name(session_id: &str) -> Result<String, String> {
 }
 
 fn workspace_state_session_id(session_id: &str) -> Result<String, String> {
-    if session_id.is_empty()
-        || !session_id.chars().all(|character| {
+    review_ui_state_id(session_id)
+        .map_err(|_| format!("Invalid workspace state session id: {session_id}"))
+}
+
+fn review_ui_state_file_name(id: &str) -> Result<String, String> {
+    Ok(format!("{}.json", review_ui_state_id(id)?))
+}
+
+fn review_ui_state_id(id: &str) -> Result<String, String> {
+    let trimmed = id.trim();
+    if trimmed.is_empty()
+        || trimmed.len() > 160
+        || !trimmed.chars().all(|character| {
             character.is_ascii_alphanumeric() || character == '-' || character == '_'
         })
     {
-        return Err(format!("Invalid workspace state session id: {session_id}"));
+        return Err("Invalid review state id".to_string());
     }
 
-    Ok(session_id.to_string())
+    Ok(trimmed.to_string())
 }
 
 fn validate_diagram_scope(scope: &str) -> Result<&str, String> {
@@ -3038,6 +3309,128 @@ fn command_stdout_with_args(
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
+fn load_json_array_persistence(path: PathBuf) -> Result<JsonArrayPersistenceResponse, String> {
+    let (exists, value) = read_optional_json::<Vec<serde_json::Value>>(&path)?;
+    Ok(JsonArrayPersistenceResponse {
+        exists,
+        value: value.unwrap_or_default(),
+    })
+}
+
+fn load_json_persistence(path: PathBuf) -> Result<JsonPersistenceResponse, String> {
+    let (exists, value) = read_optional_json::<serde_json::Value>(&path)?;
+    Ok(JsonPersistenceResponse { exists, value })
+}
+
+fn load_string_persistence(path: PathBuf) -> Result<StringPersistenceResponse, String> {
+    let (exists, value) = read_optional_json::<String>(&path)?;
+    Ok(StringPersistenceResponse { exists, value })
+}
+
+fn load_last_review_session_snapshot_inner() -> Result<JsonPersistenceResponse, String> {
+    let last_session_path = review_last_session_path()?;
+    let (exists, session_id) = read_optional_json::<String>(&last_session_path)?;
+    let Some(session_id) = session_id else {
+        return Ok(JsonPersistenceResponse {
+            exists,
+            value: None,
+        });
+    };
+
+    let snapshot_path = review_session_snapshot_path(&session_id)?;
+    let (_, snapshot) = read_optional_json::<serde_json::Value>(&snapshot_path)?;
+    if snapshot.is_none() {
+        delete_file_if_exists(&last_session_path)?;
+    }
+
+    Ok(JsonPersistenceResponse {
+        exists: true,
+        value: snapshot,
+    })
+}
+
+fn delete_review_session_snapshot_inner(session_id: &str) -> Result<(), String> {
+    delete_file_if_exists(&review_session_snapshot_path(session_id)?)?;
+    delete_file_if_exists(&review_active_file_path(session_id)?)?;
+
+    let last_session_path = review_last_session_path()?;
+    let (_, last_session_id) = read_optional_json::<String>(&last_session_path)?;
+    if last_session_id.as_deref() == Some(session_id) {
+        delete_file_if_exists(&last_session_path)?;
+    }
+
+    Ok(())
+}
+
+fn prune_review_session_snapshots_inner(
+    request: PruneReviewSessionSnapshotsRequest,
+) -> Result<(), String> {
+    let mut active_ids = request
+        .active_session_ids
+        .into_iter()
+        .filter_map(|id| review_ui_state_id(&id).ok())
+        .collect::<HashSet<_>>();
+
+    let (_, last_session_id) = read_optional_json::<String>(&review_last_session_path()?)?;
+    if let Some(last_session_id) = last_session_id {
+        if let Ok(last_session_id) = review_ui_state_id(&last_session_id) {
+            active_ids.insert(last_session_id);
+        }
+    }
+
+    prune_session_file_dir(&review_session_snapshots_dir()?, &active_ids)?;
+    prune_session_file_dir(&review_active_files_dir()?, &active_ids)?;
+    Ok(())
+}
+
+fn prune_session_file_dir(dir: &Path, active_ids: &HashSet<String>) -> Result<(), String> {
+    if !dir.exists() {
+        return Ok(());
+    }
+
+    for entry in
+        fs::read_dir(dir).map_err(|error| format!("Failed to read {}: {error}", dir.display()))?
+    {
+        let entry = entry.map_err(|error| {
+            format!("Failed to read directory entry {}: {error}", dir.display())
+        })?;
+        let path = entry.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if !active_ids.contains(stem) {
+            delete_file_if_exists(&path)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn read_optional_json<T: DeserializeOwned>(path: &Path) -> Result<(bool, Option<T>), String> {
+    let exists = path.exists();
+    let value = crate::app_data::read_json(path)?;
+    Ok((exists, value))
+}
+
+fn delete_file_if_exists(path: &Path) -> Result<(), String> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("Failed to delete {}: {error}", path.display())),
+    }
+}
+
+fn delete_dir_if_exists(path: &Path) -> Result<(), String> {
+    match fs::remove_dir_all(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("Failed to delete {}: {error}", path.display())),
+    }
+}
+
 fn write_json_file<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
     crate::app_data::write_json_atomic(path, value)
 }
@@ -3363,6 +3756,47 @@ mod tests {
 
         std::env::remove_var("REVIEW_DESK_DATA_DIR");
         fs::remove_dir_all(repo).unwrap();
+        fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[test]
+    fn persists_review_ui_state_in_app_data() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        let data_dir = temp_repo();
+        fs::create_dir_all(&data_dir).unwrap();
+        std::env::set_var("REVIEW_DESK_DATA_DIR", &data_dir);
+
+        let session = serde_json::json!({
+            "id": "session-test",
+            "repo": { "root": "/tmp/repo" }
+        });
+        write_json_file(
+            &review_session_snapshot_path("session-test").unwrap(),
+            &session,
+        )
+        .unwrap();
+        write_json_file(
+            &review_last_session_path().unwrap(),
+            &"session-test".to_string(),
+        )
+        .unwrap();
+        let loaded = load_last_review_session_snapshot_inner().unwrap();
+        assert!(loaded.exists);
+        assert_eq!(loaded.value.unwrap()["id"], "session-test");
+
+        let history = vec![serde_json::json!({ "id": "session-test" })];
+        write_json_file(&review_history_path().unwrap(), &history).unwrap();
+        let loaded_history = load_json_array_persistence(review_history_path().unwrap()).unwrap();
+        assert!(loaded_history.exists);
+        assert_eq!(loaded_history.value.len(), 1);
+
+        delete_review_session_snapshot_inner("session-test").unwrap();
+        assert!(!review_session_snapshot_path("session-test")
+            .unwrap()
+            .exists());
+        assert!(!review_last_session_path().unwrap().exists());
+
+        std::env::remove_var("REVIEW_DESK_DATA_DIR");
         fs::remove_dir_all(data_dir).unwrap();
     }
 

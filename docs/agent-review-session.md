@@ -40,6 +40,19 @@ That workspace-state file owns viewed/reviewed status, private notes, PR-only
 publishable drafts, and inline comments. Browser `localStorage` is only used as a
 migration source for older app builds.
 
+The desktop UI's review history and startup resume pointers are stored in app
+data too:
+
+```txt
+ui-state/review-history.json
+ui-state/last-review-session.json
+ui-state/review-session-snapshots/<session-id>.json
+ui-state/active-review-files/<session-id>.json
+```
+
+Startup restores the file-backed last-opened review before considering active
+agent session pointers.
+
 Review maps are optional session artifacts stored beside session data:
 
 ```txt
