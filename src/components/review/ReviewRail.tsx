@@ -1,4 +1,12 @@
-import { memo, useDeferredValue, useMemo, useRef, useState, type Ref } from "react";
+import {
+  memo,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type Ref,
+} from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Search } from "lucide-react";
 import { Input } from "@/components/ui/input";
@@ -64,6 +72,24 @@ export function ReviewRail({
     estimateSize: (index) => estimateQueueRowSize(virtualRows[index]),
     overscan: 14,
   });
+  const activeRowIndex = useMemo(() => {
+    if (!activeFileId) {
+      return -1;
+    }
+    return virtualRows.findIndex(
+      (row) => row.kind === "file" && row.record.file.id === activeFileId,
+    );
+  }, [activeFileId, virtualRows]);
+
+  useEffect(() => {
+    if (activeRowIndex < 0) {
+      return;
+    }
+    rowVirtualizer.scrollToIndex(activeRowIndex, {
+      align: "auto",
+      behavior: "auto",
+    });
+  }, [activeFileId, activeRowIndex, session.id]);
 
   return (
     <aside className="flex h-full min-h-0 flex-col border-r border-[var(--rd-hair)] bg-[var(--rd-ink)]">
@@ -203,10 +229,11 @@ const FileRow = memo(function FileRow({
                 : stale
                   ? "text-[var(--rd-del)]"
                   : reviewed
-                    ? "text-[var(--rd-pencil)] line-through decoration-from-font"
+                    ? "text-[var(--rd-pencil)]"
                     : viewed
-                      ? "text-[var(--rd-cream)]"
+                      ? "text-[var(--rd-cream-2)] group-hover:text-[var(--rd-cream)]"
                       : "text-[var(--rd-cream-2)] group-hover:text-[var(--rd-cream)]",
+              reviewed ? "line-through decoration-from-font" : "",
             ].join(" ")}
             title={file.path}
           >

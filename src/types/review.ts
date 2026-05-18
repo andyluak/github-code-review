@@ -51,6 +51,35 @@ export type LoadReviewAssetPreviewRequest = {
   diffTarget: string;
 };
 
+export type LoadReviewReferenceSourcesRequest = {
+  repoPath: string;
+  files: ReviewReferenceSourceRequestFile[];
+  maxFileBytes?: number;
+  includeImports?: boolean;
+};
+
+export type ReviewReferenceSourceRequestFile = {
+  path: string;
+  changeKind: ChangeKind;
+};
+
+export type ReviewReferenceSources = {
+  files: ReviewReferenceSourceFile[];
+  warnings: ReviewReferenceSourceWarning[];
+};
+
+export type ReviewReferenceSourceFile = {
+  path: string;
+  content: string;
+  byteSize: number;
+  isReviewFile: boolean;
+};
+
+export type ReviewReferenceSourceWarning = {
+  path?: string | null;
+  message: string;
+};
+
 export type ReviewAssetSide = {
   label: string;
   path: string;

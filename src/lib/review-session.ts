@@ -5,6 +5,7 @@ import type {
   CreateReviewSessionRequest,
   ImportReviewSessionRequest,
   LoadReviewAssetPreviewRequest,
+  LoadReviewReferenceSourcesRequest,
   LoadReviewDiagramRequest,
   LoadReviewWorkspaceStateRequest,
   ListReviewRefsRequest,
@@ -12,6 +13,7 @@ import type {
   RecentRepo,
   RepoRefs,
   ReviewAssetPreview,
+  ReviewReferenceSources,
   ReviewDiagram,
   ReviewHistoryItem,
   ReviewSession,
@@ -99,6 +101,12 @@ export async function loadReviewAssetPreview(
   request: LoadReviewAssetPreviewRequest,
 ): Promise<ReviewAssetPreview> {
   return invoke<ReviewAssetPreview>("load_review_asset_preview", { request });
+}
+
+export async function loadReviewReferenceSources(
+  request: LoadReviewReferenceSourcesRequest,
+): Promise<ReviewReferenceSources> {
+  return invoke<ReviewReferenceSources>("load_review_reference_sources", { request });
 }
 
 export function createDefaultFileState(): SessionFileState {

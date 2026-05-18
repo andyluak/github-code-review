@@ -23,6 +23,9 @@ export default defineConfig(async () => ({
           if (id.includes("/mermaid/")) {
             return undefined;
           }
+          if (id.includes("/typescript/")) {
+            return "vendor-typescript";
+          }
           if (id.includes("/react/") || id.includes("/react-dom/")) {
             return "vendor-react";
           }

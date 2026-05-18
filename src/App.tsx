@@ -23,6 +23,7 @@ import { SlabToggleGroup } from "@/components/ui/slab-toggle-group";
 import { useKeybinding, type Binding } from "@/hooks/use-keybinding";
 import { usePrContext } from "@/hooks/use-pr-context";
 import { usePrInbox } from "@/hooks/use-pr-inbox";
+import { useReviewReferences } from "@/hooks/use-review-references";
 import type {
   PullRequestSummary as GhPullRequestSummary,
   PublishReviewResponse,
@@ -39,6 +40,10 @@ import {
   fingerprintInline,
   fingerprintThreadReply,
 } from "@/lib/fingerprint";
+import {
+  buildReviewReferenceDiffIndex,
+  mapReviewReferenceTargets,
+} from "@/lib/review-reference-locations";
 import {
   countThreadReplyDrafts,
   createThreadReplyDraft,
@@ -78,6 +83,11 @@ import {
   toggleViewedStatus,
 } from "@/lib/review-session";
 import type {
+  ReviewReferenceLookupRequest,
+  ReviewReferenceLookupResult,
+  ReviewReferenceTarget,
+} from "@/types/references";
+import type {
   ActiveReviewSession,
   InlineComment,
   RecentRepo,
@@ -102,7 +112,19 @@ type JumpTarget = {
   fileId: string;
   diffPosition?: number;
   expandSection?: "private";
+  reference?: {
+    lineNumber: number;
+    column: number;
+    length: number;
+    symbol: string;
+  };
   requestedAt: number;
+};
+
+type ReferenceBackTarget = {
+  fileId: string;
+  diffPosition: number;
+  reference: NonNullable<JumpTarget["reference"]>;
 };
 
 type CenterMode = "diff" | "map";
@@ -148,6 +170,7 @@ function App() {
   const [isRefsLoading, setIsRefsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [jumpTarget, setJumpTarget] = useState<JumpTarget | null>(null);
+  const [referenceBackStack, setReferenceBackStack] = useState<ReferenceBackTarget[]>([]);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [publishOpen, setPublishOpen] = useState(false);
   const [handoffOpen, setHandoffOpen] = useState(false);
@@ -160,6 +183,7 @@ function App() {
   const activePrNumber =
     session?.target.kind === "pullRequest" ? session.target.number ?? null : null;
   const prContext = usePrContext(repoPath || null, activePrNumber);
+  const reviewReferences = useReviewReferences(session);
   const visiblePrContext = prContext.context;
   const visibleReviewThreads = visiblePrContext?.reviewThreads ?? [];
   const hasReviewMapSource = Boolean(reviewDiagram?.source.trim());
@@ -239,6 +263,10 @@ function App() {
   const fileById = useMemo(() => {
     return new Map(session?.files.map((file) => [file.id, file]) ?? []);
   }, [session]);
+  const referenceDiffIndex = useMemo(
+    () => buildReviewReferenceDiffIndex(session),
+    [session],
+  );
   const activeFile = useMemo(() => {
     return activeFileId ? fileById.get(activeFileId) ?? null : null;
   }, [activeFileId, fileById]);
@@ -267,6 +295,10 @@ function App() {
   useEffect(() => {
     sessionRef.current = session;
   }, [session]);
+
+  useEffect(() => {
+    setReferenceBackStack([]);
+  }, [session?.id, session?.snapshotHash]);
 
   useEffect(() => {
     activeFileIdRef.current = activeFileId;
@@ -1013,6 +1045,79 @@ function App() {
 
   const handleScrollHandled = useCallback(() => setJumpTarget(null), []);
 
+  const findReviewReferences = useCallback(
+    (origin: ReviewReferenceLookupRequest): ReviewReferenceLookupResult => {
+      const references = reviewReferences.findReferences(origin);
+      return {
+        kind: "semantic",
+        symbol: origin.symbol,
+        references: mapReviewReferenceTargets({
+          index: referenceDiffIndex,
+          origin,
+          references,
+        }),
+        warnings: [
+          ...reviewReferences.warnings,
+          ...(reviewReferences.error ? [reviewReferences.error] : []),
+        ],
+      };
+    },
+    [referenceDiffIndex, reviewReferences],
+  );
+
+  const jumpToReviewReference = useCallback(
+    (target: ReviewReferenceTarget, origin: ReviewReferenceLookupRequest) => {
+      if (target.diffPosition === null) {
+        return;
+      }
+      setReferenceBackStack((current) =>
+        [
+          ...current,
+          {
+            fileId: origin.fileId,
+            diffPosition: origin.diffPosition,
+            reference: {
+              lineNumber: origin.lineNumber,
+              column: origin.column,
+              length: origin.length,
+              symbol: origin.symbol,
+            },
+          },
+        ].slice(-20),
+      );
+      setActiveFileId(target.fileId);
+      setJumpTarget({
+        fileId: target.fileId,
+        diffPosition: target.diffPosition,
+        reference: {
+          lineNumber: target.lineNumber,
+          column: target.column,
+          length: target.length,
+          symbol: origin.symbol,
+        },
+        requestedAt: Date.now(),
+      });
+    },
+    [],
+  );
+
+  const jumpBackFromReference = useCallback(() => {
+    setReferenceBackStack((current) => {
+      const previous = current[current.length - 1];
+      if (!previous) {
+        return current;
+      }
+      setActiveFileId(previous.fileId);
+      setJumpTarget({
+        fileId: previous.fileId,
+        diffPosition: previous.diffPosition,
+        reference: previous.reference,
+        requestedAt: Date.now(),
+      });
+      return current.slice(0, -1);
+    });
+  }, []);
+
   const selectFile = useCallback((fileId: string) => {
     const file = sessionRef.current?.files.find((item) => item.id === fileId);
     setActiveFileId(fileId);
@@ -1169,7 +1274,7 @@ function App() {
         handler: focusQueueFilter,
       },
       {
-        combo: "j",
+        combo: "k",
         label: "Next file",
         group: "Queue",
         disabled: !canUseReviewShortcuts,
@@ -1177,7 +1282,7 @@ function App() {
         handler: () => moveActiveFile(1),
       },
       {
-        combo: "k",
+        combo: "j",
         label: "Previous file",
         group: "Queue",
         disabled: !canUseReviewShortcuts,
@@ -1207,6 +1312,13 @@ function App() {
           !activeFile ||
           activeFile.changeKind === "deleted",
         handler: openActiveFile,
+      },
+      {
+        combo: "b",
+        label: "Back to previous reference",
+        group: "References",
+        disabled: !canUseReviewShortcuts || referenceBackStack.length === 0,
+        handler: jumpBackFromReference,
       },
       {
         combo: "[",
@@ -1244,12 +1356,14 @@ function App() {
       canUseReviewShortcuts,
       focusQueueFilter,
       handoffOpen,
+      jumpBackFromReference,
       markActiveReviewedAndAdvance,
       markActiveViewed,
       moveActiveFile,
       openActiveFile,
       paletteOpen,
       publishOpen,
+      referenceBackStack.length,
       repoPath,
       session,
       shortcutHelpOpen,
@@ -1563,10 +1677,17 @@ function App() {
                     file={activeFile}
                     fileState={activeFileState}
                     jumpTarget={jumpTarget}
+                    referenceStatus={reviewReferences.status}
+                    referenceWarnings={reviewReferences.warnings}
+                    referenceError={reviewReferences.error}
+                    referenceBackCount={referenceBackStack.length}
                     supportsReviewComments={supportsReviewComments}
                     centerMode={centerMode}
                     onCenterModeChange={setCenterMode}
                     onScrollHandled={handleScrollHandled}
+                    onFindReferences={findReviewReferences}
+                    onJumpToReference={jumpToReviewReference}
+                    onReferenceBack={jumpBackFromReference}
                     onMarkViewed={markActiveViewed}
                     onMarkReviewed={markActiveReviewed}
                     onOpenFile={openActiveFile}

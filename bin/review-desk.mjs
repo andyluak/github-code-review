@@ -800,8 +800,9 @@ function buildHandoffBundle(context, scope, currentPath, pr) {
   const selectedFiles = selectHandoffFiles(context, files, scope, requestedPath);
   const notes = selectedFiles
     .map((file) => noteForHandoffFile(context, file, pr))
+    .map((note) => scope === "notes" ? privateHandoffNoteOnly(note) : note)
     .filter((note) => scope !== "pr-comments" && hasHandoffNoteContent(note));
-  const summary = handoffSummary(context, files, pr);
+  const summary = handoffSummary(context, files, pr, scope);
 
   return {
     version: 1,
@@ -825,14 +826,14 @@ function buildHandoffBundle(context, scope, currentPath, pr) {
       createdBy: context.manifest.createdBy ?? null,
     },
     summary,
-    currentFile: requestedPath
+    currentFile: requestedPath && scope !== "notes"
       ? fileHandoffEntry(context, files.find((file) => sameRepoPath(file.path, requestedPath)) ?? { path: requestedPath })
       : null,
-    reviewQueue: scope === "pr-comments"
+    reviewQueue: scope === "pr-comments" || scope === "notes"
       ? []
       : (scope === "session" ? files : selectedFiles).map((file) => fileHandoffEntry(context, file)),
     notes,
-    pr: pr ? filterPrHandoffContext(pr, scope, requestedPath) : null,
+    pr: pr && scope !== "notes" ? filterPrHandoffContext(pr, scope, requestedPath) : null,
   };
 }
 
@@ -842,7 +843,7 @@ function selectHandoffFiles(context, files, scope, requestedPath) {
   }
   if (scope === "notes") {
     return files.filter((file) =>
-      hasHandoffNoteContent(noteForHandoffFile(context, file, null)),
+      hasPrivateHandoffNoteContent(noteForHandoffFile(context, file, null)),
     );
   }
   return files;
@@ -898,31 +899,62 @@ function noteForHandoffFile(context, file, pr) {
 
 function hasHandoffNoteContent(note) {
   return (
-    note.status !== "unseen" ||
     Boolean(note.privateNote?.trim()) ||
     Boolean(note.publishableDraft?.trim()) ||
-    (note.inlineComments ?? []).length > 0 ||
+    (note.inlineComments ?? []).some((comment) => Boolean(comment.body?.trim())) ||
     (note.threadReplies ?? []).length > 0
   );
 }
 
-function handoffSummary(context, files, pr) {
+function hasPrivateHandoffNoteContent(note) {
+  return (
+    Boolean(note.privateNote?.trim()) ||
+    (note.inlineComments ?? []).some(
+      (comment) => comment.visibility === "private" && Boolean(comment.body?.trim()),
+    )
+  );
+}
+
+function privateHandoffNoteOnly(note) {
+  return {
+    fileId: note.fileId,
+    path: note.path,
+    privateNote: note.privateNote ?? "",
+    publishableDraft: "",
+    inlineComments: (note.inlineComments ?? []).filter(
+      (comment) => comment.visibility === "private" && Boolean(comment.body?.trim()),
+    ),
+    threadReplies: [],
+  };
+}
+
+function handoffSummary(context, files, pr, scope) {
   const diff = diffSummary(context.repoRoot, context.target);
   const notes = files
     .map((file) => noteForHandoffFile(context, file, pr))
-    .filter(hasHandoffNoteContent);
+    .filter((note) =>
+      scope === "notes" ? hasPrivateHandoffNoteContent(note) : hasHandoffNoteContent(note),
+    );
   let privateInlineComments = 0;
   let reviewInlineDrafts = 0;
   let threadReplyDrafts = 0;
   for (const note of notes) {
     for (const comment of note.inlineComments ?? []) {
+      if (scope === "notes") {
+        if (comment.visibility === "private" && comment.body?.trim()) {
+          privateInlineComments += 1;
+        }
+        continue;
+      }
       if (comment.visibility === "review") {
         reviewInlineDrafts += 1;
       } else {
         privateInlineComments += 1;
       }
     }
-    threadReplyDrafts += note.threadReplies.length;
+    if (scope !== "notes") {
+      threadReplyDrafts += note.threadReplies.length;
+    }
   }
 
   return {
@@ -934,10 +966,12 @@ function handoffSummary(context, files, pr) {
     privateInlineComments,
     reviewInlineDrafts,
     threadReplyDrafts,
-    prThreads: pr?.threads.length ?? 0,
-    unresolvedPrThreads: pr?.threads.filter((thread) => !thread.isResolved).length ?? 0,
-    topLevelPrComments: pr?.topLevelComments.length ?? 0,
-    warnings: pr?.warning ? [pr.warning] : [],
+    prThreads: scope === "notes" ? 0 : pr?.threads.length ?? 0,
+    unresolvedPrThreads: scope === "notes"
+      ? 0
+      : pr?.threads.filter((thread) => !thread.isResolved).length ?? 0,
+    topLevelPrComments: scope === "notes" ? 0 : pr?.topLevelComments.length ?? 0,
+    warnings: scope === "notes" || !pr?.warning ? [] : [pr.warning],
   };
 }
 
@@ -958,6 +992,10 @@ function diffSummary(repoRoot, target) {
 }
 
 function renderHandoffMarkdown(bundle) {
+  if (bundle.scope === "notes") {
+    return renderPrivateNotesMarkdown(bundle);
+  }
+
   const lines = [
     "# Review Desk Handoff",
     "",
@@ -998,7 +1036,10 @@ function renderHandoffMarkdown(bundle) {
   if (bundle.notes.length > 0) {
     lines.push("", "## Reviewer Notes", "");
     for (const note of bundle.notes) {
-      lines.push(`### ${note.path}`, `Status: ${note.status}`);
+      lines.push(`### ${note.path}`);
+      if (note.status) {
+        lines.push(`Status: ${note.status}`);
+      }
       if (note.privateNote.trim()) {
         lines.push("", "Private note:", quoteBlock(note.privateNote));
       }
@@ -1052,6 +1093,27 @@ function renderHandoffMarkdown(bundle) {
     "",
     "Use this Review Desk context as reviewer-owned state. Preserve private notes as private, treat publishable drafts as candidate PR comments, and continue from the existing review queue instead of restarting the review.",
   );
+
+  return `${lines.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd()}\n`;
+}
+
+function renderPrivateNotesMarkdown(bundle) {
+  const lines = ["# Review Desk Private Notes"];
+
+  if (bundle.notes.length === 0) {
+    lines.push("", "No private notes.");
+    return `${lines.join("\n")}\n`;
+  }
+
+  for (const note of bundle.notes) {
+    lines.push("", `## ${note.path}`);
+    if (note.privateNote.trim()) {
+      lines.push("", quoteBlock(note.privateNote));
+    }
+    for (const comment of note.inlineComments ?? []) {
+      lines.push("", `- ${handoffLineLabel(comment)} (${comment.side}): ${comment.body}`);
+    }
+  }
 
   return `${lines.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd()}\n`;
 }

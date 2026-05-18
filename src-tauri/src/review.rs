@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{hash_map::DefaultHasher, HashSet},
+    collections::{hash_map::DefaultHasher, HashSet, VecDeque},
     env, fs,
     hash::{Hash, Hasher},
     path::{Component, Path, PathBuf},
@@ -10,6 +10,8 @@ use std::{
 use crate::github::gh::run_gh_command;
 
 const EMPTY_TREE_SHA: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+const REFERENCE_SOURCE_MAX_BYTES: usize = 512 * 1024;
+const REFERENCE_SOURCE_MAX_FILES: usize = 320;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -88,6 +90,47 @@ pub struct LoadReviewAssetPreviewRequest {
     old_path: Option<String>,
     change_kind: ChangeKind,
     diff_target: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoadReviewReferenceSourcesRequest {
+    repo_path: String,
+    files: Vec<ReviewReferenceSourceRequestFile>,
+    #[serde(default)]
+    max_file_bytes: Option<usize>,
+    #[serde(default)]
+    include_imports: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReviewReferenceSourceRequestFile {
+    path: String,
+    change_kind: ChangeKind,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewReferenceSources {
+    files: Vec<ReviewReferenceSourceFile>,
+    warnings: Vec<ReviewReferenceSourceWarning>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewReferenceSourceFile {
+    path: String,
+    content: String,
+    byte_size: usize,
+    is_review_file: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewReferenceSourceWarning {
+    path: Option<String>,
+    message: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -682,6 +725,16 @@ pub async fn load_review_asset_preview(
     .await
 }
 
+#[tauri::command]
+pub async fn load_review_reference_sources(
+    request: LoadReviewReferenceSourcesRequest,
+) -> Result<ReviewReferenceSources, String> {
+    crate::blocking::run("load_review_reference_sources", move || {
+        load_review_reference_sources_inner(request)
+    })
+    .await
+}
+
 fn load_review_asset_preview_inner(
     request: LoadReviewAssetPreviewRequest,
 ) -> Result<ReviewAssetPreview, String> {
@@ -723,6 +776,91 @@ fn load_review_asset_preview_inner(
         new,
         message,
     })
+}
+
+fn load_review_reference_sources_inner(
+    request: LoadReviewReferenceSourcesRequest,
+) -> Result<ReviewReferenceSources, String> {
+    let repo_root = repo_root(&request.repo_path)?;
+    let canonical_repo = repo_root.canonicalize().map_err(|error| {
+        format!(
+            "Failed to resolve repository path {}: {error}",
+            repo_root.display()
+        )
+    })?;
+    let max_file_bytes = request.max_file_bytes.unwrap_or(REFERENCE_SOURCE_MAX_BYTES);
+    let include_imports = request.include_imports.unwrap_or(true);
+    let mut warnings = Vec::new();
+    let mut files = Vec::new();
+    let mut seen = HashSet::new();
+    let mut review_paths = HashSet::new();
+    let mut queue = VecDeque::new();
+
+    for file in request.files {
+        if file.change_kind == ChangeKind::Deleted || !is_reference_ts_like_path(&file.path) {
+            continue;
+        }
+        let path = normalize_review_source_path(&file.path)?;
+        review_paths.insert(path.clone());
+        queue.push_back(path);
+    }
+
+    while let Some(path) = queue.pop_front() {
+        if !seen.insert(path.clone()) {
+            continue;
+        }
+        if files.len() >= REFERENCE_SOURCE_MAX_FILES {
+            warnings.push(ReviewReferenceSourceWarning {
+                path: None,
+                message: format!(
+                    "Reference index capped at {REFERENCE_SOURCE_MAX_FILES} source files."
+                ),
+            });
+            break;
+        }
+
+        match read_reference_source_file(&repo_root, &canonical_repo, &path, max_file_bytes) {
+            Ok(Some((content, byte_size))) => {
+                let is_review_file = review_paths.contains(&path);
+                if include_imports {
+                    for specifier in reference_import_specifiers(&content) {
+                        if !specifier.starts_with('.') {
+                            continue;
+                        }
+                        if let Some(import_path) =
+                            resolve_reference_import(&canonical_repo, &path, &specifier)
+                        {
+                            if is_reference_ts_like_path(&import_path)
+                                && !seen.contains(&import_path)
+                            {
+                                queue.push_back(import_path);
+                            }
+                        }
+                    }
+                }
+                files.push(ReviewReferenceSourceFile {
+                    path,
+                    content,
+                    byte_size,
+                    is_review_file,
+                });
+            }
+            Ok(None) => {
+                if review_paths.contains(&path) {
+                    warnings.push(ReviewReferenceSourceWarning {
+                        path: Some(path),
+                        message: "Reference source is missing from the working tree.".to_string(),
+                    });
+                }
+            }
+            Err(message) => warnings.push(ReviewReferenceSourceWarning {
+                path: Some(path),
+                message,
+            }),
+        }
+    }
+
+    Ok(ReviewReferenceSources { files, warnings })
 }
 
 fn open_file_in_editor(path: &Path) -> Result<(), String> {
@@ -2647,6 +2785,151 @@ fn read_git_asset(repo_root: &Path, rev: &str, path: &str) -> Result<Option<Vec<
     }
 }
 
+fn normalize_review_source_path(path: &str) -> Result<String, String> {
+    Ok(safe_relative_review_path(path)?
+        .to_string_lossy()
+        .replace('\\', "/"))
+}
+
+fn read_reference_source_file(
+    repo_root: &Path,
+    canonical_repo: &Path,
+    path: &str,
+    max_file_bytes: usize,
+) -> Result<Option<(String, usize)>, String> {
+    let relative_path = safe_relative_review_path(path)?;
+    let requested_path = repo_root.join(relative_path);
+    if !requested_path.exists() {
+        return Ok(None);
+    }
+
+    let canonical_file = requested_path.canonicalize().map_err(|error| {
+        format!(
+            "Failed to resolve reference source {}: {error}",
+            requested_path.display()
+        )
+    })?;
+    if !canonical_file.starts_with(canonical_repo) {
+        return Err(format!("Refusing to index path outside repository: {path}"));
+    }
+
+    let metadata = fs::metadata(&canonical_file).map_err(|error| {
+        format!(
+            "Failed to inspect reference source {}: {error}",
+            canonical_file.display()
+        )
+    })?;
+    let byte_size = metadata.len() as usize;
+    if byte_size > max_file_bytes {
+        return Err(format!(
+            "Skipped large reference source ({byte_size} bytes, cap {max_file_bytes})."
+        ));
+    }
+
+    let bytes = fs::read(&canonical_file).map_err(|error| {
+        format!(
+            "Failed to read reference source {}: {error}",
+            canonical_file.display()
+        )
+    })?;
+    if bytes.contains(&0) {
+        return Err("Skipped binary reference source.".to_string());
+    }
+
+    Ok(Some((
+        String::from_utf8_lossy(&bytes).to_string(),
+        byte_size,
+    )))
+}
+
+fn reference_import_specifiers(source: &str) -> Vec<String> {
+    let mut specifiers = Vec::new();
+    let bytes = source.as_bytes();
+    let mut index = 0;
+
+    while index < bytes.len() {
+        let quote = bytes[index];
+        if quote != b'\'' && quote != b'"' {
+            index += 1;
+            continue;
+        }
+
+        let prefix_start = index.saturating_sub(40);
+        let prefix = String::from_utf8_lossy(&bytes[prefix_start..index]);
+        let prefix = prefix.trim_end();
+        let looks_like_import =
+            prefix.ends_with("from") || prefix.ends_with("import(") || prefix.ends_with("require(");
+
+        index += 1;
+        let value_start = index;
+        while index < bytes.len() && bytes[index] != quote {
+            if bytes[index] == b'\\' {
+                index = index.saturating_add(2);
+            } else {
+                index += 1;
+            }
+        }
+        if looks_like_import && index <= bytes.len() {
+            let value = &source[value_start..index];
+            if !value.is_empty() {
+                specifiers.push(value.to_string());
+            }
+        }
+        index += 1;
+    }
+
+    specifiers.sort();
+    specifiers.dedup();
+    specifiers
+}
+
+fn resolve_reference_import(
+    canonical_repo: &Path,
+    source_path: &str,
+    specifier: &str,
+) -> Option<String> {
+    let source_relative = safe_relative_review_path(source_path).ok()?;
+    let source_dir = source_relative.parent().unwrap_or_else(|| Path::new(""));
+    let base = canonical_repo.join(source_dir).join(specifier);
+    let mut candidates = vec![base.clone()];
+
+    if base.extension().is_none() {
+        for extension in ["ts", "tsx", "js", "jsx", "mts", "cts", "mjs", "cjs"] {
+            candidates.push(PathBuf::from(format!("{}.{}", base.display(), extension)));
+        }
+    }
+
+    for extension in ["ts", "tsx", "js", "jsx"] {
+        candidates.push(base.join(format!("index.{extension}")));
+    }
+
+    for candidate in candidates {
+        if !candidate.is_file() {
+            continue;
+        }
+        let canonical = candidate.canonicalize().ok()?;
+        if !canonical.starts_with(canonical_repo) {
+            continue;
+        }
+        let relative = canonical.strip_prefix(canonical_repo).ok()?;
+        return Some(relative.to_string_lossy().replace('\\', "/"));
+    }
+
+    None
+}
+
+fn is_reference_ts_like_path(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    lower.ends_with(".ts")
+        || lower.ends_with(".tsx")
+        || lower.ends_with(".js")
+        || lower.ends_with(".jsx")
+        || lower.ends_with(".mts")
+        || lower.ends_with(".cts")
+        || lower.ends_with(".mjs")
+        || lower.ends_with(".cjs")
+}
+
 fn image_mime_type(path: &str) -> Option<&'static str> {
     let extension = Path::new(path)
         .extension()
@@ -2828,6 +3111,81 @@ mod tests {
         assert!(preview.old.unwrap().data_url.ends_with("AQID"));
         assert!(preview.new.unwrap().data_url.ends_with("BAUG"));
 
+        fs::remove_dir_all(repo).unwrap();
+    }
+
+    #[test]
+    fn loads_reference_sources_for_review_files_and_local_imports() {
+        let repo = temp_repo();
+        fs::create_dir_all(repo.join("src")).unwrap();
+        fs::write(
+            repo.join("src/use.ts"),
+            "import { target } from './defs';\nexport const result = target();\n",
+        )
+        .unwrap();
+        fs::write(
+            repo.join("src/defs.ts"),
+            "export function target() { return 1; }\n",
+        )
+        .unwrap();
+        fs::write(repo.join("README.md"), "not indexed\n").unwrap();
+        run_git(&repo, &["init"]);
+
+        let sources = load_review_reference_sources_inner(LoadReviewReferenceSourcesRequest {
+            repo_path: repo.display().to_string(),
+            files: vec![
+                ReviewReferenceSourceRequestFile {
+                    path: "src/use.ts".to_string(),
+                    change_kind: ChangeKind::Modified,
+                },
+                ReviewReferenceSourceRequestFile {
+                    path: "README.md".to_string(),
+                    change_kind: ChangeKind::Modified,
+                },
+            ],
+            max_file_bytes: Some(1024),
+            include_imports: Some(true),
+        })
+        .unwrap();
+
+        let paths = sources
+            .files
+            .iter()
+            .map(|source| source.path.as_str())
+            .collect::<Vec<_>>();
+        assert!(paths.contains(&"src/use.ts"));
+        assert!(paths.contains(&"src/defs.ts"));
+        assert!(!paths.contains(&"README.md"));
+        assert!(sources
+            .files
+            .iter()
+            .any(|source| { source.path == "src/use.ts" && source.is_review_file }));
+        assert!(sources
+            .files
+            .iter()
+            .any(|source| { source.path == "src/defs.ts" && !source.is_review_file }));
+
+        fs::remove_dir_all(repo).unwrap();
+    }
+
+    #[test]
+    fn rejects_reference_source_paths_outside_repo() {
+        let repo = temp_repo();
+        fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init"]);
+
+        let error = load_review_reference_sources_inner(LoadReviewReferenceSourcesRequest {
+            repo_path: repo.display().to_string(),
+            files: vec![ReviewReferenceSourceRequestFile {
+                path: "../secret.ts".to_string(),
+                change_kind: ChangeKind::Modified,
+            }],
+            max_file_bytes: Some(1024),
+            include_imports: Some(true),
+        })
+        .unwrap_err();
+
+        assert!(error.contains("Invalid review file path"));
         fs::remove_dir_all(repo).unwrap();
     }
 

@@ -222,10 +222,19 @@ textarea,
   100% { outline-color: transparent; }
 }
 
+@keyframes rd-symbol-flash {
+  0%   { background-color: var(--rd-vermillion); color: #1A0F0A; }
+  100% { background-color: transparent; color: inherit; }
+}
+
 .rd-jump-flash {
   outline: 2px solid var(--rd-vermillion);
   outline-offset: -2px;
   animation: rd-jump-flash 800ms ease-out forwards;
+}
+
+.rd-symbol-flash {
+  animation: rd-symbol-flash 900ms ease-out forwards;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -238,6 +247,11 @@ textarea,
   .rd-jump-flash {
     animation: none;
     outline: 2px solid var(--rd-vermillion);
+  }
+  .rd-symbol-flash {
+    animation: none;
+    background-color: var(--rd-vermillion);
+    color: #1A0F0A;
   }
 }
 

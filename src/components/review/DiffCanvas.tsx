@@ -11,6 +11,7 @@ import {
 } from "react";
 import {
   Check,
+  CornerUpLeft,
   Copy,
   FileDiff,
 } from "lucide-react";
@@ -19,7 +20,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useDiffViewMode, type DiffViewMode } from "@/hooks/use-diff-view-mode";
 import { isShortcutTextEntryTarget } from "@/hooks/use-keybinding";
 import { compactPath, pathParts } from "@/lib/format";
-import { highlightCodeLine } from "@/lib/syntax-highlight";
+import { tokenizeCodeLine, type CodeToken } from "@/lib/syntax-highlight";
 import { SlabButton } from "@/components/ui/slab-button";
 import { SlabToggleGroup } from "@/components/ui/slab-toggle-group";
 import { MarkdownView } from "@/components/review/MarkdownView";
@@ -32,6 +33,12 @@ import {
   normalizeThreadReplyMap,
 } from "@/lib/thread-reply-drafts";
 import type { ReviewThread } from "@/types/github";
+import type {
+  ReviewReferenceLookupRequest,
+  ReviewReferenceLookupResult,
+  ReviewReferenceStatus,
+  ReviewReferenceTarget,
+} from "@/types/references";
 import type {
   DiffLine,
   InlineComment,
@@ -47,6 +54,12 @@ type JumpTarget = {
   fileId: string;
   diffPosition?: number;
   expandSection?: "private";
+  reference?: {
+    lineNumber: number;
+    column: number;
+    length: number;
+    symbol: string;
+  };
   requestedAt: number;
 };
 
@@ -56,10 +69,22 @@ type DiffCanvasProps = {
   file: ReviewFile | null;
   fileState: SessionFileState | null;
   jumpTarget: JumpTarget | null;
+  referenceStatus: ReviewReferenceStatus;
+  referenceWarnings: string[];
+  referenceError: string | null;
+  referenceBackCount: number;
   supportsReviewComments: boolean;
   centerMode: "diff" | "map";
   onCenterModeChange: (mode: "diff" | "map") => void;
   onScrollHandled: () => void;
+  onFindReferences: (
+    origin: ReviewReferenceLookupRequest,
+  ) => ReviewReferenceLookupResult;
+  onJumpToReference: (
+    target: ReviewReferenceTarget,
+    origin: ReviewReferenceLookupRequest,
+  ) => void;
+  onReferenceBack: () => void;
   onMarkViewed: () => void;
   onMarkReviewed: () => void;
   onOpenFile: () => void;
@@ -76,6 +101,17 @@ type LineAnchor = {
   diffPosition: number;
   side: InlineCommentSide;
   lineNumber?: number | null;
+};
+
+type CodeReferenceLine = Omit<
+  ReviewReferenceLookupRequest,
+  "symbol" | "column" | "length"
+>;
+
+type ReferencePanelState = {
+  origin: ReviewReferenceLookupRequest;
+  result: ReviewReferenceLookupResult | null;
+  requestedAt: number;
 };
 
 type CommentTarget = {
@@ -101,6 +137,52 @@ type SplitDisplayRow = {
 
 const EMPTY_INLINE_COMMENTS: InlineComment[] = [];
 const DIFF_KEY_SCROLL_STEP = 24;
+const MAX_REFERENCE_ROWS = 80;
+const REFERENCE_KEYWORDS = new Set([
+  "as",
+  "async",
+  "await",
+  "break",
+  "case",
+  "catch",
+  "class",
+  "const",
+  "continue",
+  "default",
+  "delete",
+  "do",
+  "else",
+  "enum",
+  "export",
+  "extends",
+  "false",
+  "finally",
+  "for",
+  "from",
+  "function",
+  "if",
+  "import",
+  "in",
+  "instanceof",
+  "interface",
+  "let",
+  "new",
+  "null",
+  "of",
+  "return",
+  "super",
+  "switch",
+  "this",
+  "throw",
+  "true",
+  "try",
+  "type",
+  "typeof",
+  "undefined",
+  "var",
+  "void",
+  "while",
+]);
 
 export const DiffCanvas = memo(function DiffCanvas({
   repoRoot,
@@ -108,10 +190,17 @@ export const DiffCanvas = memo(function DiffCanvas({
   file,
   fileState,
   jumpTarget,
+  referenceStatus,
+  referenceWarnings,
+  referenceError,
+  referenceBackCount,
   supportsReviewComments,
   centerMode,
   onCenterModeChange,
   onScrollHandled,
+  onFindReferences,
+  onJumpToReference,
+  onReferenceBack,
   onMarkViewed,
   onMarkReviewed,
   onOpenFile,
@@ -125,6 +214,7 @@ export const DiffCanvas = memo(function DiffCanvas({
 }: DiffCanvasProps) {
   const [viewMode, setViewMode] = useDiffViewMode();
   const [draftTarget, setDraftTarget] = useState<CommentTarget | null>(null);
+  const [referencePanel, setReferencePanel] = useState<ReferencePanelState | null>(null);
   const [isLineSelectionDragging, setIsLineSelectionDragging] = useState(false);
   const [assetPreview, setAssetPreview] = useState<ReviewAssetPreview | null>(null);
   const [assetPreviewStatus, setAssetPreviewStatus] = useState<
@@ -144,6 +234,7 @@ export const DiffCanvas = memo(function DiffCanvas({
 
   useEffect(() => {
     setDraftTarget(null);
+    setReferencePanel(null);
     setIsLineSelectionDragging(false);
     lineSelectionDragRef.current = false;
     const viewport = scrollViewportRef.current;
@@ -188,13 +279,25 @@ export const DiffCanvas = memo(function DiffCanvas({
     target.classList.remove("rd-jump-flash");
     void target.offsetWidth;
     target.classList.add("rd-jump-flash");
+    const symbolTarget = jumpTarget.reference
+      ? target.querySelector<HTMLElement>(
+          `[data-reference-column="${jumpTarget.reference.column}"][data-reference-length="${jumpTarget.reference.length}"]`,
+        )
+      : null;
+    symbolTarget?.classList.remove("rd-symbol-flash");
+    if (symbolTarget) {
+      void symbolTarget.offsetWidth;
+      symbolTarget.classList.add("rd-symbol-flash");
+    }
     const flashTimer = window.setTimeout(() => {
       target.classList.remove("rd-jump-flash");
+      symbolTarget?.classList.remove("rd-symbol-flash");
     }, 900);
     onScrollHandled();
     return () => {
       window.clearTimeout(flashTimer);
       target.classList.remove("rd-jump-flash");
+      symbolTarget?.classList.remove("rd-symbol-flash");
     };
   }, [jumpTarget, file, onScrollHandled]);
 
@@ -233,6 +336,17 @@ export const DiffCanvas = memo(function DiffCanvas({
       cancelled = true;
     };
   }, [diffTarget, file, repoRoot, shouldPreviewImageAsset]);
+
+  useEffect(() => {
+    if (!referencePanel || referencePanel.result || referenceStatus !== "ready") {
+      return;
+    }
+    setReferencePanel((current) =>
+      current && current.requestedAt === referencePanel.requestedAt
+        ? { ...current, result: onFindReferences(current.origin) }
+        : current,
+    );
+  }, [onFindReferences, referencePanel, referenceStatus]);
 
   const isOneSided = file
     ? file.changeKind === "added" || file.changeKind === "deleted"
@@ -341,6 +455,14 @@ export const DiffCanvas = memo(function DiffCanvas({
         return current;
       }
       return extendTarget(current, anchor);
+    });
+  }
+
+  function openReferencePanel(origin: ReviewReferenceLookupRequest) {
+    setReferencePanel({
+      origin,
+      result: referenceStatus === "ready" ? onFindReferences(origin) : null,
+      requestedAt: Date.now(),
     });
   }
 
@@ -502,6 +624,17 @@ export const DiffCanvas = memo(function DiffCanvas({
           open in editor ↗
         </SlabButton>
 
+        <SlabButton
+          variant="default"
+          disabled={referenceBackCount === 0}
+          onClick={onReferenceBack}
+          aria-label="Back to previous reference"
+          title="Back to previous reference: b"
+        >
+          <CornerUpLeft className="mr-1 size-3" />
+          ref back
+        </SlabButton>
+
         <div className="flex-1" />
 
         <SlabButton
@@ -564,13 +697,29 @@ export const DiffCanvas = memo(function DiffCanvas({
                         <Fragment key={`${hunk.header}-${row.key}`}>
                           <SplitRow
                             row={row}
+                            oldReferenceLine={row.old ? referenceLineForAnchor(file, row.old.anchor) : null}
+                            newReferenceLine={row.new ? referenceLineForAnchor(file, row.new.anchor) : null}
                             selected={positions.some((position) =>
                               isTargetSelected(draftTarget, position),
                             )}
                             onAddComment={openInlineComposer}
                             onBeginSelection={beginInlineSelection}
                             onExtendSelection={extendInlineSelection}
+                            onRequestReferences={openReferencePanel}
                           />
+                          {referencePanel &&
+                          positions.includes(referencePanel.origin.diffPosition) ? (
+                            <ReferencePanel
+                              panel={referencePanel}
+                              status={referenceStatus}
+                              warnings={referenceWarnings}
+                              error={referenceError}
+                              onClose={() => setReferencePanel(null)}
+                              onJump={onJumpToReference}
+                              onBack={onReferenceBack}
+                              backCount={referenceBackCount}
+                            />
+                          ) : null}
                           {draftTarget &&
                           !isLineSelectionDragging &&
                           positions.includes(draftTarget.endDiffPosition) ? (
@@ -637,11 +786,35 @@ export const DiffCanvas = memo(function DiffCanvas({
                             line={line}
                             anchor={anchor}
                             changeKind={file.changeKind}
+                            referenceLine={referenceLineForAnchor(file, {
+                              ...anchor,
+                              side:
+                                line.kind === "deletion" || file.changeKind === "deleted"
+                                  ? "old"
+                                  : "new",
+                              lineNumber:
+                                line.kind === "deletion" || file.changeKind === "deleted"
+                                  ? line.oldLine
+                                  : line.newLine,
+                            })}
                             selected={isTargetSelected(draftTarget, anchor.diffPosition)}
                             onAddComment={openInlineComposer}
                             onBeginSelection={beginInlineSelection}
                             onExtendSelection={extendInlineSelection}
+                            onRequestReferences={openReferencePanel}
                           />
+                          {referencePanel?.origin.diffPosition === anchor.diffPosition ? (
+                            <ReferencePanel
+                              panel={referencePanel}
+                              status={referenceStatus}
+                              warnings={referenceWarnings}
+                              error={referenceError}
+                              onClose={() => setReferencePanel(null)}
+                              onJump={onJumpToReference}
+                              onBack={onReferenceBack}
+                              backCount={referenceBackCount}
+                            />
+                          ) : null}
                           {draftTarget?.endDiffPosition === anchor.diffPosition &&
                           !isLineSelectionDragging ? (
                             <InlineCommentComposer
@@ -714,6 +887,10 @@ function areDiffCanvasPropsEqual(
     previous.diffTarget === next.diffTarget &&
     previous.file === next.file &&
     previous.jumpTarget === next.jumpTarget &&
+    previous.referenceStatus === next.referenceStatus &&
+    previous.referenceWarnings === next.referenceWarnings &&
+    previous.referenceError === next.referenceError &&
+    previous.referenceBackCount === next.referenceBackCount &&
     previous.supportsReviewComments === next.supportsReviewComments &&
     previous.centerMode === next.centerMode &&
     previous.onCenterModeChange === next.onCenterModeChange &&
@@ -721,6 +898,9 @@ function areDiffCanvasPropsEqual(
     sameInlineComments(previous.fileState, next.fileState) &&
     sameThreadReplies(previous.fileState, next.fileState) &&
     previous.onScrollHandled === next.onScrollHandled &&
+    previous.onFindReferences === next.onFindReferences &&
+    previous.onJumpToReference === next.onJumpToReference &&
+    previous.onReferenceBack === next.onReferenceBack &&
     previous.onMarkViewed === next.onMarkViewed &&
     previous.onMarkReviewed === next.onMarkReviewed &&
     previous.onOpenFile === next.onOpenFile &&
@@ -921,19 +1101,184 @@ function groupCommentsByPosition(inlineComments: InlineComment[]) {
   return commentsByPosition;
 }
 
+function ReferencePanel({
+  panel,
+  status,
+  warnings,
+  error,
+  backCount,
+  onClose,
+  onJump,
+  onBack,
+}: {
+  panel: ReferencePanelState;
+  status: ReviewReferenceStatus;
+  warnings: string[];
+  error: string | null;
+  backCount: number;
+  onClose: () => void;
+  onJump: (
+    target: ReviewReferenceTarget,
+    origin: ReviewReferenceLookupRequest,
+  ) => void;
+  onBack: () => void;
+}) {
+  const references = panel.result?.references ?? [];
+  const visibleReferences = references.slice(0, MAX_REFERENCE_ROWS);
+  const grouped = groupReferenceTargets(visibleReferences);
+  const visibleWarnings = [
+    ...(panel.result?.warnings ?? warnings),
+    ...(references.length > MAX_REFERENCE_ROWS
+      ? [`Showing first ${MAX_REFERENCE_ROWS} references.`]
+      : []),
+  ].slice(0, 3);
+
+  return (
+    <div className="border-b border-[var(--rd-hair)] bg-[var(--rd-ink)] px-6 py-3">
+      <div className="ml-[68px] border-l border-[var(--rd-vermillion)] pl-3.5">
+        <div className="mb-2 flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <div className="font-voice text-[12px] text-[var(--rd-cream-2)]">
+              references for{" "}
+              <span className="font-mono text-[var(--rd-vermillion-2)]">
+                {panel.origin.symbol}
+              </span>
+            </div>
+            <div className="font-mono text-[10px] text-[var(--rd-pencil)]">
+              semantic TypeScript/JavaScript · current review files
+            </div>
+          </div>
+          <div className="flex items-stretch border border-[var(--rd-hair)] divide-x divide-[var(--rd-hair)]">
+            <SlabButton
+              size="sm"
+              variant="default"
+              disabled={backCount === 0}
+              onClick={onBack}
+            >
+              <CornerUpLeft className="size-3" />
+              back
+            </SlabButton>
+            <SlabButton size="sm" variant="default" onClick={onClose}>
+              close
+            </SlabButton>
+          </div>
+        </div>
+
+        {status === "loading" && !panel.result ? (
+          <ReferencePanelMessage>indexing references...</ReferencePanelMessage>
+        ) : null}
+        {status === "error" ? (
+          <ReferencePanelMessage tone="error">
+            {error ?? "Reference index failed."}
+          </ReferencePanelMessage>
+        ) : null}
+        {status === "ready" && references.length === 0 ? (
+          <ReferencePanelMessage>
+            no semantic references in changed review files.
+          </ReferencePanelMessage>
+        ) : null}
+
+        {grouped.map((group) => (
+          <section key={group.path} className="mt-2">
+            <div className="mb-1 truncate font-mono text-[10.5px] text-[var(--rd-pencil)]">
+              {compactPath(group.path, 72)}
+            </div>
+            <div className="space-y-1">
+              {group.references.map((reference) => {
+                const canJump = reference.diffPosition !== null;
+                return (
+                  <button
+                    key={`${reference.path}:${reference.lineNumber}:${reference.column}`}
+                    type="button"
+                    disabled={!canJump}
+                    onClick={() => onJump(reference, panel.origin)}
+                    className={[
+                      "grid w-full grid-cols-[72px_minmax(0,1fr)_112px] gap-2 border border-[var(--rd-hair)] px-2.5 py-1.5 text-left font-mono text-[11px]",
+                      canJump
+                        ? "text-[var(--rd-cream-2)] hover:border-[var(--rd-vermillion-line)] hover:bg-[var(--rd-ink-3)]"
+                        : "cursor-not-allowed text-[var(--rd-pencil)] opacity-70",
+                    ].join(" ")}
+                  >
+                    <span className="tabular-nums text-[var(--rd-vermillion-2)]">
+                      line {reference.lineNumber}
+                    </span>
+                    <span className="truncate">{reference.lineText.trim()}</span>
+                    <span className="text-right text-[10px] text-[var(--rd-pencil)]">
+                      {canJump ? "jump" : "outside visible diff"}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+        ))}
+
+        {visibleWarnings.length > 0 ? (
+          <div className="mt-2 space-y-1">
+            {visibleWarnings.map((warning) => (
+              <div
+                key={warning}
+                className="font-mono text-[10px] text-[var(--rd-pencil)]"
+              >
+                {warning}
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function ReferencePanelMessage({
+  children,
+  tone = "neutral",
+}: {
+  children: string;
+  tone?: "neutral" | "error";
+}) {
+  return (
+    <div
+      className={[
+        "border border-[var(--rd-hair)] px-3 py-2 font-mono text-[11px]",
+        tone === "error" ? "text-[var(--rd-del)]" : "text-[var(--rd-pencil)]",
+      ].join(" ")}
+    >
+      {children}
+    </div>
+  );
+}
+
+function groupReferenceTargets(references: ReviewReferenceTarget[]) {
+  const groups: Array<{ path: string; references: ReviewReferenceTarget[] }> = [];
+  const byPath = new Map<string, ReviewReferenceTarget[]>();
+  for (const reference of references) {
+    byPath.set(reference.path, [...(byPath.get(reference.path) ?? []), reference]);
+  }
+  for (const [path, items] of byPath) {
+    groups.push({ path, references: items });
+  }
+  return groups;
+}
 
 const SplitRow = memo(function SplitRow({
   row,
+  oldReferenceLine,
+  newReferenceLine,
   selected,
   onAddComment,
   onBeginSelection,
   onExtendSelection,
+  onRequestReferences,
 }: {
   row: SplitDisplayRow;
+  oldReferenceLine: CodeReferenceLine | null;
+  newReferenceLine: CodeReferenceLine | null;
   selected: boolean;
   onAddComment: (anchor: LineAnchor, extendSelection: boolean) => void;
   onBeginSelection: (anchor: LineAnchor, extendSelection: boolean) => void;
   onExtendSelection: (anchor: LineAnchor) => void;
+  onRequestReferences: (origin: ReviewReferenceLookupRequest) => void;
 }) {
   const oldHot = row.old?.line.kind === "deletion";
   const newHot = row.new?.line.kind === "addition";
@@ -961,6 +1306,8 @@ const SplitRow = memo(function SplitRow({
           row.old ? (extend) => onBeginSelection(row.old!.anchor, extend) : undefined
         }
         onExtendSelection={row.old ? () => onExtendSelection(row.old!.anchor) : undefined}
+        referenceLine={oldReferenceLine}
+        onRequestReferences={onRequestReferences}
       >
         {row.old?.line.content ?? ""}
       </CodeCell>
@@ -978,6 +1325,8 @@ const SplitRow = memo(function SplitRow({
           row.new ? (extend) => onBeginSelection(row.new!.anchor, extend) : undefined
         }
         onExtendSelection={row.new ? () => onExtendSelection(row.new!.anchor) : undefined}
+        referenceLine={newReferenceLine}
+        onRequestReferences={onRequestReferences}
       >
         {row.new?.line.content ?? ""}
       </CodeCell>
@@ -989,18 +1338,22 @@ const UnifiedRow = memo(function UnifiedRow({
   line,
   anchor,
   changeKind,
+  referenceLine,
   selected,
   onAddComment,
   onBeginSelection,
   onExtendSelection,
+  onRequestReferences,
 }: {
   line: DiffLine;
   anchor: LineAnchor;
   changeKind: ReviewFile["changeKind"];
+  referenceLine: CodeReferenceLine | null;
   selected: boolean;
   onAddComment: (anchor: LineAnchor, extendSelection: boolean) => void;
   onBeginSelection: (anchor: LineAnchor, extendSelection: boolean) => void;
   onExtendSelection: (anchor: LineAnchor) => void;
+  onRequestReferences: (origin: ReviewReferenceLookupRequest) => void;
 }) {
   const isAddition = line.kind === "addition";
   const isDeletion = line.kind === "deletion";
@@ -1032,6 +1385,8 @@ const UnifiedRow = memo(function UnifiedRow({
         onAddComment={(extend) => onAddComment(lineAnchor, extend)}
         onBeginSelection={(extend) => onBeginSelection(lineAnchor, extend)}
         onExtendSelection={() => onExtendSelection(lineAnchor)}
+        referenceLine={referenceLine}
+        onRequestReferences={onRequestReferences}
       >
         {line.content}
       </CodeCell>
@@ -1286,6 +1641,8 @@ const CodeCell = memo(function CodeCell({
   onAddComment,
   onBeginSelection,
   onExtendSelection,
+  referenceLine,
+  onRequestReferences,
 }: {
   children: string;
   muted: boolean;
@@ -1296,13 +1653,24 @@ const CodeCell = memo(function CodeCell({
   onAddComment?: (extendSelection: boolean) => void;
   onBeginSelection?: (extendSelection: boolean) => void;
   onExtendSelection?: () => void;
+  referenceLine?: CodeReferenceLine | null;
+  onRequestReferences?: (origin: ReviewReferenceLookupRequest) => void;
 }) {
   const canComment = Boolean(children && onAddComment);
   const canCopy = children.length > 0;
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
   const codeContent = useMemo(
-    () => (children ? renderCodeContent(children, counterpart, tone) : null),
-    [children, counterpart, tone],
+    () =>
+      children
+        ? renderCodeContent(
+            children,
+            counterpart,
+            tone,
+            referenceLine ?? null,
+            onRequestReferences,
+          )
+        : null,
+    [children, counterpart, onRequestReferences, referenceLine, tone],
   );
 
   useEffect(() => {
@@ -1528,14 +1896,25 @@ function renderCodeContent(
   content: string,
   counterpart: string | undefined,
   tone: "add" | "del" | "neutral",
+  referenceLine: CodeReferenceLine | null,
+  onRequestReferences: ((origin: ReviewReferenceLookupRequest) => void) | undefined,
 ) {
   if (!counterpart || content === counterpart || tone === "neutral") {
-    return highlightCodeLine(content);
+    return renderCodeTokens(content, 0, referenceLine, onRequestReferences);
   }
 
   return inlineSegments(content, counterpart).map((segment, index) => {
     if (!segment.changed) {
-      return <Fragment key={`${index}-same`}>{highlightCodeLine(segment.text)}</Fragment>;
+      return (
+        <Fragment key={`${index}-same`}>
+          {renderCodeTokens(
+            segment.text,
+            segment.start,
+            referenceLine,
+            onRequestReferences,
+          )}
+        </Fragment>
+      );
     }
 
     return (
@@ -1548,7 +1927,12 @@ function renderCodeContent(
             : "bg-[var(--rd-del-line)] text-[var(--rd-cream)]",
         ].join(" ")}
       >
-        {highlightCodeLine(segment.text)}
+        {renderCodeTokens(
+          segment.text,
+          segment.start,
+          referenceLine,
+          onRequestReferences,
+        )}
       </span>
     );
   });
@@ -1575,10 +1959,60 @@ function inlineSegments(content: string, counterpart: string) {
 
   const end = content.length - suffix;
   return [
-    { text: content.slice(0, prefix), changed: false },
-    { text: content.slice(prefix, end), changed: true },
-    { text: content.slice(end), changed: false },
+    { text: content.slice(0, prefix), changed: false, start: 0 },
+    { text: content.slice(prefix, end), changed: true, start: prefix },
+    { text: content.slice(end), changed: false, start: end },
   ].filter((segment) => segment.text.length > 0);
+}
+
+function renderCodeTokens(
+  content: string,
+  baseOffset: number,
+  referenceLine: CodeReferenceLine | null,
+  onRequestReferences: ((origin: ReviewReferenceLookupRequest) => void) | undefined,
+) {
+  return tokenizeCodeLine(content).map((token, index) => {
+    const absoluteStart = baseOffset + token.start;
+    if (!referenceLine || !onRequestReferences || !isReferenceToken(token)) {
+      return (
+        <span key={`${index}-${token.value}-${absoluteStart}`} className={token.className}>
+          {token.value}
+        </span>
+      );
+    }
+
+    return (
+      <button
+        key={`${index}-${token.value}-${absoluteStart}`}
+        type="button"
+        className={[
+          token.className,
+          "rounded-[2px] px-[1px] text-left hover:bg-[var(--rd-vermillion-bg)] hover:text-[var(--rd-cream)] focus-visible:bg-[var(--rd-vermillion-bg)] focus-visible:outline-none",
+        ].join(" ")}
+        data-reference-column={absoluteStart}
+        data-reference-length={token.value.length}
+        onPointerDown={(event) => event.stopPropagation()}
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          onRequestReferences({
+            ...referenceLine,
+            symbol: token.value,
+            column: absoluteStart,
+            length: token.value.length,
+          });
+        }}
+        aria-label={`Find references for ${token.value}`}
+        title={`Find references for ${token.value}`}
+      >
+        {token.value}
+      </button>
+    );
+  });
+}
+
+function isReferenceToken(token: CodeToken) {
+  return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(token.value) && !REFERENCE_KEYWORDS.has(token.value);
 }
 
 function getLineAnchor(
@@ -1596,6 +2030,31 @@ function getLineAnchor(
     side,
     lineNumber,
   };
+}
+
+function referenceLineForAnchor(
+  file: ReviewFile,
+  anchor: LineAnchor,
+): CodeReferenceLine | null {
+  if (
+    file.changeKind === "deleted" ||
+    anchor.side !== "new" ||
+    typeof anchor.lineNumber !== "number" ||
+    !isReferenceTsLikePath(file.path)
+  ) {
+    return null;
+  }
+
+  return {
+    fileId: file.id,
+    path: file.path,
+    lineNumber: anchor.lineNumber,
+    diffPosition: anchor.diffPosition,
+  };
+}
+
+function isReferenceTsLikePath(path: string) {
+  return /\.[cm]?[tj]sx?$/.test(path);
 }
 
 function targetFromAnchor(anchor: LineAnchor): CommentTarget {

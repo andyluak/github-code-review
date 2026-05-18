@@ -57,7 +57,7 @@ export type HandoffFile = {
 export type HandoffNote = {
   fileId: string;
   path: string;
-  status: string;
+  status?: string;
   privateNote: string;
   publishableDraft: string;
   inlineComments: InlineComment[];
@@ -121,15 +121,19 @@ export function buildHandoffBundle({
   scope: HandoffScope;
 }): HandoffBundle {
   const files = selectFilesForScope(session, workspaceState, activeFile, scope);
-  const queueFiles = scope === "session" ? session.files : files;
+  const queueFiles =
+    scope === "session" ? session.files : scope === "current-file" ? files : [];
   const threadById = new Map(
     (prContext?.reviewThreads ?? []).map((thread) => [thread.id, thread]),
   );
   const notes = files
     .map((file) => noteForFile(file, workspaceState[file.id], threadById))
+    .map((note) => scope === "notes" ? privateNoteOnly(note) : note)
     .filter((note) => scope !== "pr-comments" && hasNoteContent(note));
-  const pr = prContext ? prForHandoff(prContext, scope, activeFile) : null;
-  const summary = countSummary(session, workspaceState, prContext);
+  const pr = prContext && scope !== "notes"
+    ? prForHandoff(prContext, scope, activeFile)
+    : null;
+  const summary = countSummary(session, workspaceState, prContext, scope);
 
   return {
     version: 1,
@@ -145,7 +149,9 @@ export function buildHandoffBundle({
       kind: session.target.kind,
     },
     summary,
-    currentFile: activeFile ? fileForHandoff(activeFile, workspaceState[activeFile.id]) : null,
+    currentFile: scope !== "notes" && activeFile
+      ? fileForHandoff(activeFile, workspaceState[activeFile.id])
+      : null,
     reviewQueue: scope === "pr-comments"
       ? []
       : queueFiles.map((file) => fileForHandoff(file, workspaceState[file.id])),
@@ -155,6 +161,10 @@ export function buildHandoffBundle({
 }
 
 export function renderHandoffMarkdown(bundle: HandoffBundle): string {
+  if (bundle.scope === "notes") {
+    return renderPrivateNotesMarkdown(bundle);
+  }
+
   const lines: string[] = [
     "# Review Desk Handoff",
     "",
@@ -191,7 +201,7 @@ export function renderHandoffMarkdown(bundle: HandoffBundle): string {
     lines.push("", "## Reviewer Notes", "");
     for (const note of bundle.notes) {
       lines.push(`### ${note.path}`);
-      lines.push(`Status: ${note.status}`);
+      if (note.status) lines.push(`Status: ${note.status}`);
       if (note.privateNote.trim()) {
         lines.push("", "Private note:", indentBlock(note.privateNote));
       }
@@ -282,7 +292,7 @@ function selectFilesForScope(
   }
   if (scope === "notes") {
     return session.files.filter((file) =>
-      hasNoteContent(noteForFile(file, workspaceState[file.id], new Map())),
+      hasPrivateNoteContent(noteForFile(file, workspaceState[file.id], new Map())),
     );
   }
   return session.files;
@@ -387,6 +397,7 @@ function countSummary(
   session: ReviewSession,
   workspaceState: ReviewWorkspaceState,
   prContext: PullRequestContext | null,
+  scope: HandoffScope,
 ): HandoffBundle["summary"] {
   let notes = 0;
   let privateInlineComments = 0;
@@ -395,15 +406,25 @@ function countSummary(
 
   for (const file of session.files) {
     const note = noteForFile(file, workspaceState[file.id], new Map());
-    if (hasNoteContent(note)) notes += 1;
+    if (scope === "notes" ? hasPrivateNoteContent(note) : hasNoteContent(note)) {
+      notes += 1;
+    }
     for (const comment of note.inlineComments) {
+      if (scope === "notes") {
+        if (comment.visibility === "private" && comment.body.trim()) {
+          privateInlineComments += 1;
+        }
+        continue;
+      }
       if (comment.visibility === "review") reviewInlineDrafts += 1;
       else privateInlineComments += 1;
     }
-    threadReplyDrafts += note.threadReplies.length;
+    if (scope !== "notes") {
+      threadReplyDrafts += note.threadReplies.length;
+    }
   }
 
-  const threads = prContext?.reviewThreads ?? [];
+  const threads = scope === "notes" ? [] : prContext?.reviewThreads ?? [];
   return {
     includedFiles: session.summary.includedFiles,
     excludedFiles: session.summary.excludedFiles,
@@ -415,18 +436,60 @@ function countSummary(
     threadReplyDrafts,
     prThreads: threads.length,
     unresolvedPrThreads: threads.filter((thread) => !thread.isResolved).length,
-    topLevelPrComments: prContext?.topLevelComments.length ?? 0,
+    topLevelPrComments: scope === "notes" ? 0 : prContext?.topLevelComments.length ?? 0,
   };
 }
 
 function hasNoteContent(note: HandoffNote) {
   return (
-    note.status !== "unseen" ||
     Boolean(note.privateNote.trim()) ||
     Boolean(note.publishableDraft.trim()) ||
-    note.inlineComments.length > 0 ||
+    note.inlineComments.some((comment) => Boolean(comment.body.trim())) ||
     note.threadReplies.length > 0
   );
+}
+
+function hasPrivateNoteContent(note: HandoffNote) {
+  return (
+    Boolean(note.privateNote.trim()) ||
+    note.inlineComments.some(
+      (comment) => comment.visibility === "private" && Boolean(comment.body.trim()),
+    )
+  );
+}
+
+function privateNoteOnly(note: HandoffNote): HandoffNote {
+  return {
+    fileId: note.fileId,
+    path: note.path,
+    privateNote: note.privateNote,
+    publishableDraft: "",
+    inlineComments: note.inlineComments.filter(
+      (comment) => comment.visibility === "private" && Boolean(comment.body.trim()),
+    ),
+    threadReplies: [],
+  };
+}
+
+function renderPrivateNotesMarkdown(bundle: HandoffBundle): string {
+  const lines = ["# Review Desk Private Notes"];
+
+  if (bundle.notes.length === 0) {
+    lines.push("", "No private notes.");
+    return `${lines.join("\n")}\n`;
+  }
+
+  for (const note of bundle.notes) {
+    lines.push("", `## ${note.path}`);
+    if (note.privateNote.trim()) {
+      lines.push("", indentBlock(note.privateNote));
+    }
+    for (const comment of note.inlineComments) {
+      lines.push("", `- ${lineLabel(comment)} (${comment.side}): ${comment.body}`);
+    }
+  }
+
+  return `${lines.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd()}\n`;
 }
 
 function targetLabel(session: ReviewSession) {

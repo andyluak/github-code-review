@@ -103,6 +103,9 @@ Use `review-desk handoff` when a user wants to pass their Review Desk notes,
 drafts, queue, and PR comments to an agent. It reads the active app-data session
 and emits markdown by default; use `--format json` for structured automation.
 Supported scopes are `session`, `current-file`, `notes`, and `pr-comments`.
+The `notes` scope is intentionally private-only: reviewer-written private file
+notes and private inline notes, without viewed/reviewed progress, file reasons,
+agent notes, publishable drafts, review queue, or PR thread context.
 Do not launch Codex, Claude, a terminal, or an MCP server unless the user asks
 for that separately.
 

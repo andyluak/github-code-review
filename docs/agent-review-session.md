@@ -167,7 +167,10 @@ The handoff command reads the active session manifest, workspace-state notes,
 and PR comments/threads when `gh` can resolve them. It emits reviewer-owned
 context for an agent without making the terminal, Codex, or Claude the source of
 truth. Supported scopes are `session`, `current-file`, `notes`, and
-`pr-comments`; supported formats are `markdown` and `json`.
+`pr-comments`; supported formats are `markdown` and `json`. The `notes` scope is
+only the reviewer's private file notes and private inline notes; it does not
+include viewed/reviewed progress, review queue reasons, agent notes, publishable
+drafts, or PR thread context.
 
 Create, read, edit, and export review maps:
 

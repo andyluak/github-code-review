@@ -1,6 +1,7 @@
-type Token = {
+export type CodeToken = {
   value: string;
   className: string;
+  start: number;
 };
 
 const KEYWORDS = new Set([
@@ -57,14 +58,14 @@ const TYPES = new Set([
 ]);
 
 export function highlightCodeLine(content: string) {
-  return tokenize(content).map((token, index) => (
+  return tokenizeCodeLine(content).map((token, index) => (
     <span key={`${index}-${token.value}`} className={token.className}>
       {token.value}
     </span>
   ));
 }
 
-function tokenize(line: string): Token[] {
+export function tokenizeCodeLine(line: string): CodeToken[] {
   if (!line) {
     return [];
   }
@@ -72,7 +73,7 @@ function tokenize(line: string): Token[] {
   const commentIndex = findCommentIndex(line);
   const code = commentIndex >= 0 ? line.slice(0, commentIndex) : line;
   const comment = commentIndex >= 0 ? line.slice(commentIndex) : "";
-  const tokens: Token[] = [];
+  const tokens: CodeToken[] = [];
   const pattern =
     /("[^"\\]*(?:\\.[^"\\]*)*"|'[^'\\]*(?:\\.[^'\\]*)*'|`[^`]*`|\b\d+(?:\.\d+)?\b|\b[A-Za-z_][A-Za-z0-9_]*\b|[{}()[\].,:;<>/=+\-*|&!?]+)/g;
 
@@ -82,19 +83,31 @@ function tokenize(line: string): Token[] {
     const index = match.index ?? 0;
 
     if (index > cursor) {
-      tokens.push({ value: code.slice(cursor, index), className: "text-current" });
+      tokens.push({
+        value: code.slice(cursor, index),
+        className: "text-current",
+        start: cursor,
+      });
     }
 
-    tokens.push({ value, className: tokenClass(value, code, index) });
+    tokens.push({ value, className: tokenClass(value, code, index), start: index });
     cursor = index + value.length;
   }
 
   if (cursor < code.length) {
-    tokens.push({ value: code.slice(cursor), className: "text-current" });
+    tokens.push({
+      value: code.slice(cursor),
+      className: "text-current",
+      start: cursor,
+    });
   }
 
   if (comment) {
-    tokens.push({ value: comment, className: "text-[#766d5d] italic" });
+    tokens.push({
+      value: comment,
+      className: "text-[#766d5d] italic",
+      start: code.length,
+    });
   }
 
   return tokens;

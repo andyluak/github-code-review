@@ -22,6 +22,7 @@ pub fn run() {
             review::list_review_refs,
             review::load_review_diagram,
             review::load_review_asset_preview,
+            review::load_review_reference_sources,
             review::load_review_workspace_state,
             review::open_review_file,
             review::save_review_diagram,
