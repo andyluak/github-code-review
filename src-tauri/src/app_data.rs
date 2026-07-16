@@ -52,7 +52,8 @@ pub fn review_desk_data_dir() -> Option<PathBuf> {
 }
 
 pub fn repo_storage_key(repo_root: &Path) -> String {
-    let repo_name = repo_root
+    let identity_root = repo_identity_root(repo_root);
+    let repo_name = identity_root
         .file_name()
         .and_then(|name| name.to_str())
         .map(slug)
@@ -61,8 +62,50 @@ pub fn repo_storage_key(repo_root: &Path) -> String {
     format!(
         "{}-{:016x}",
         repo_name,
-        fnv1a64(repo_root.display().to_string().as_bytes())
+        fnv1a64(identity_root.display().to_string().as_bytes())
     )
+}
+
+pub fn repo_identity_root(repo_root: &Path) -> PathBuf {
+    let fallback_root = repo_root
+        .canonicalize()
+        .unwrap_or_else(|_| repo_root.to_path_buf());
+    let dot_git = repo_root.join(".git");
+    if dot_git.is_dir() {
+        return fallback_root;
+    }
+
+    let Ok(pointer) = fs::read_to_string(&dot_git) else {
+        return fallback_root;
+    };
+    let Some(git_dir_value) = pointer.trim().strip_prefix("gitdir:") else {
+        return fallback_root;
+    };
+    let git_dir_value = git_dir_value.trim();
+    let git_dir = if Path::new(git_dir_value).is_absolute() {
+        PathBuf::from(git_dir_value)
+    } else {
+        repo_root.join(git_dir_value)
+    };
+    let Ok(common_dir_value) = fs::read_to_string(git_dir.join("commondir")) else {
+        return fallback_root;
+    };
+    let common_dir_value = common_dir_value.trim();
+    let common_dir = if Path::new(common_dir_value).is_absolute() {
+        PathBuf::from(common_dir_value)
+    } else {
+        git_dir.join(common_dir_value)
+    };
+    let common_dir = common_dir.canonicalize().unwrap_or(common_dir);
+
+    if common_dir.file_name().and_then(|name| name.to_str()) == Some(".git") {
+        common_dir
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or(fallback_root)
+    } else {
+        fallback_root
+    }
 }
 
 pub fn repo_data_dir(repo_root: &Path) -> Result<PathBuf, String> {
@@ -185,6 +228,31 @@ mod tests {
         let a = repo_storage_key(Path::new("/tmp/clone-a"));
         let b = repo_storage_key(Path::new("/tmp/clone-b"));
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn linked_worktree_uses_main_checkout_storage_key() {
+        let root = std::env::temp_dir().join(format!(
+            "review-desk-worktree-storage-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let main = root.join("loft-enterprise");
+        let worktree = root.join("loft-wt-graph");
+        let worktree_git_dir = main.join(".git/worktrees/loft-wt-graph");
+        fs::create_dir_all(&worktree_git_dir).unwrap();
+        fs::create_dir_all(&worktree).unwrap();
+        fs::write(
+            worktree.join(".git"),
+            format!("gitdir: {}\n", worktree_git_dir.display()),
+        )
+        .unwrap();
+        fs::write(worktree_git_dir.join("commondir"), "../..\n").unwrap();
+
+        assert_eq!(repo_identity_root(&worktree), main.canonicalize().unwrap());
+        assert_eq!(repo_storage_key(&worktree), repo_storage_key(&main));
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

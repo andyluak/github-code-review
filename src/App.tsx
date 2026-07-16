@@ -171,6 +171,9 @@ function App() {
   const [publishOpen, setPublishOpen] = useState(false);
   const [handoffOpen, setHandoffOpen] = useState(false);
   const [shortcutHelpOpen, setShortcutHelpOpen] = useState(false);
+  const [diffFindRequestId, setDiffFindRequestId] = useState<number | null>(null);
+  const [diffSelectAllRequestId, setDiffSelectAllRequestId] =
+    useState<number | null>(null);
   const [singleKeyShortcutsEnabled, setSingleKeyShortcutsEnabled] = useState(
     () => window.localStorage.getItem(SINGLE_KEY_SHORTCUTS_STORAGE_KEY) !== "off",
   );
@@ -636,6 +639,18 @@ function App() {
         return;
       }
       if (activeSession.manifestPath === lastSeenActiveManifest.current) {
+        const currentSession = sessionRef.current;
+        if (!isLiveAgentWorktreeSession(currentSession, activeSession.manifestPath)) {
+          return;
+        }
+
+        const refreshedSession = await importActiveReviewSession({ repoPath: path });
+        if (
+          refreshedSession &&
+          refreshedSession.snapshotHash !== currentSession.snapshotHash
+        ) {
+          await applySession(refreshedSession);
+        }
         return;
       }
       if (
@@ -1247,6 +1262,16 @@ function App() {
     queueFilterInputRef.current?.select();
   }, []);
 
+  const openDiffFind = useCallback(() => {
+    setCenterMode("diff");
+    setDiffFindRequestId(Date.now());
+  }, []);
+
+  const selectActiveDiffFile = useCallback(() => {
+    setCenterMode("diff");
+    setDiffSelectAllRequestId(Date.now());
+  }, []);
+
   const topLayerOpen = shortcutHelpOpen || paletteOpen || publishOpen || handoffOpen;
   const canUseReviewShortcuts = Boolean(session) && !topLayerOpen;
   const reviewShortcutBindings = useMemo<Binding[]>(
@@ -1290,6 +1315,20 @@ function App() {
         group: "Diff",
         disabled: topLayerOpen,
         handler: () => toggleDiffViewMode(),
+      },
+      {
+        combo: "cmd+f",
+        label: "Find in active file",
+        group: "Diff",
+        disabled: !canUseReviewShortcuts || !activeFile,
+        handler: openDiffFind,
+      },
+      {
+        combo: "cmd+a",
+        label: "Select active diff file",
+        group: "Diff",
+        disabled: !canUseReviewShortcuts || !activeFile,
+        handler: selectActiveDiffFile,
       },
       {
         combo: "/",
@@ -1386,10 +1425,12 @@ function App() {
       markActiveViewed,
       moveActiveFile,
       openActiveFile,
+      openDiffFind,
       paletteOpen,
       publishOpen,
       referenceBackStack.length,
       repoPath,
+      selectActiveDiffFile,
       session,
       shortcutHelpOpen,
       supportsReviewComments,
@@ -1735,6 +1776,8 @@ function App() {
                     referenceWarnings={reviewReferences.warnings}
                     referenceError={reviewReferences.error}
                     referenceBackCount={referenceBackStack.length}
+                    findRequestId={diffFindRequestId}
+                    selectAllRequestId={diffSelectAllRequestId}
                     supportsReviewComments={supportsReviewComments}
                     centerMode={centerMode}
                     onCenterModeChange={setCenterMode}
@@ -2189,6 +2232,24 @@ function ReviewMapFallback() {
         </div>
       </div>
     </div>
+  );
+}
+
+function isLiveAgentWorktreeSession(
+  session: ReviewSession | null,
+  manifestPath: string,
+): session is ReviewSession {
+  if (
+    !session ||
+    session.order.source !== "agent" ||
+    session.order.manifestPath !== manifestPath
+  ) {
+    return false;
+  }
+
+  return (
+    session.target.kind === "workingTree" ||
+    (session.target.kind === "branch" && session.target.headRef === "working tree")
   );
 }
 

@@ -12,6 +12,7 @@
     "preview": "vite preview",
     "review-desk": "node ./bin/review-desk.mjs",
     "test:shortcuts": "node ./bin/test-shortcuts.mjs",
+    "test:diff-copy": "node ./bin/test-diff-copy.mjs",
     "test:references": "node ./bin/test-review-references.mjs",
     "perf:review-rail": "node ./bin/perf-review-rail.mjs",
     "tauri": "tauri",

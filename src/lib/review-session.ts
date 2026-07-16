@@ -211,10 +211,11 @@ export async function clearRecentRepos(): Promise<void> {
 }
 
 export async function rememberRepo(refs: RepoRefs): Promise<RecentRepo[]> {
+  const identityRoot = refs.identityRoot || refs.root;
   const nextRepo: RecentRepo = {
     root: refs.root,
     requestedPath: refs.requestedPath,
-    name: basename(refs.root),
+    name: basename(identityRoot),
     branch: refs.currentBranch,
     headSha: refs.headSha,
     lastOpenedAt: new Date().toISOString(),

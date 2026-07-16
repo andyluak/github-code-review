@@ -26,18 +26,22 @@ export function SessionChip({ session, onClick }: Props) {
       );
       break;
     }
-    case "branch":
+    case "branch": {
+      const base = t.baseRef ?? "";
+      const head = t.headRef ?? "";
+      const label = base && head ? `${base} ← ${head}` : t.label || "set branch";
       body = (
         <>
           <span className="font-mono text-[12px] text-[var(--rd-cream)]">
             branch
           </span>
           <span className="font-mono text-[12px] text-[var(--rd-cream)]">
-            {t.baseRef} ← {t.headRef}
+            {label}
           </span>
         </>
       );
       break;
+    }
     case "commit":
       body = (
         <>

@@ -98,6 +98,8 @@ pub struct LoadReviewReferenceSourcesRequest {
     repo_path: String,
     files: Vec<ReviewReferenceSourceRequestFile>,
     #[serde(default)]
+    diff_target: Option<String>,
+    #[serde(default)]
     max_file_bytes: Option<usize>,
     #[serde(default)]
     include_imports: Option<bool>,
@@ -423,6 +425,7 @@ pub struct ActiveReviewSession {
 pub struct RepoRefs {
     requested_path: String,
     root: String,
+    identity_root: String,
     current_branch: String,
     default_branch: Option<String>,
     head_sha: String,
@@ -489,7 +492,11 @@ struct PullRequestHeadRepositoryOwner {
 }
 
 #[derive(Debug, Serialize, Clone)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 enum ReviewTarget {
     WorkingTree {
         label: String,
@@ -861,6 +868,15 @@ fn load_review_reference_sources_inner(
     })?;
     let max_file_bytes = request.max_file_bytes.unwrap_or(REFERENCE_SOURCE_MAX_BYTES);
     let include_imports = request.include_imports.unwrap_or(true);
+    let reference_source = request
+        .diff_target
+        .as_deref()
+        .and_then(|target| {
+            asset_sources(&repo_root, target)
+                .ok()
+                .and_then(|(_, new)| new)
+        })
+        .unwrap_or(AssetSource::Worktree);
     let mut warnings = Vec::new();
     let mut files = Vec::new();
     let mut seen = HashSet::new();
@@ -890,7 +906,13 @@ fn load_review_reference_sources_inner(
             break;
         }
 
-        match read_reference_source_file(&repo_root, &canonical_repo, &path, max_file_bytes) {
+        match read_reference_source_file(
+            &repo_root,
+            &canonical_repo,
+            &path,
+            max_file_bytes,
+            &reference_source,
+        ) {
             Ok(Some((content, byte_size))) => {
                 let is_review_file = review_paths.contains(&path);
                 if include_imports {
@@ -1935,6 +1957,9 @@ fn list_review_refs_inner(request: ListReviewRefsRequest) -> Result<RepoRefs, St
     Ok(RepoRefs {
         requested_path: request.repo_path,
         root: repo_root.display().to_string(),
+        identity_root: crate::app_data::repo_identity_root(&repo_root)
+            .display()
+            .to_string(),
         current_branch,
         default_branch: default_branch(&repo_root),
         head_sha,
@@ -2304,7 +2329,11 @@ fn resolve_review_target(
             let head = clean_ref(&head_ref, "head ref")?;
             let is_worktree = head == "WORKTREE";
             let diff_target = if is_worktree {
-                Some(base.clone())
+                Some(
+                    git_stdout(repo_root, &["merge-base", &base, "HEAD"])?
+                        .trim()
+                        .to_string(),
+                )
             } else {
                 Some(format!("{base}...{head}"))
             };
@@ -3067,6 +3096,23 @@ fn read_reference_source_file(
     canonical_repo: &Path,
     path: &str,
     max_file_bytes: usize,
+    source: &AssetSource,
+) -> Result<Option<(String, usize)>, String> {
+    match source {
+        AssetSource::Worktree => {
+            read_worktree_reference_source_file(repo_root, canonical_repo, path, max_file_bytes)
+        }
+        AssetSource::Git(rev) => {
+            read_git_reference_source_file(repo_root, rev, path, max_file_bytes)
+        }
+    }
+}
+
+fn read_worktree_reference_source_file(
+    repo_root: &Path,
+    canonical_repo: &Path,
+    path: &str,
+    max_file_bytes: usize,
 ) -> Result<Option<(String, usize)>, String> {
     let relative_path = safe_relative_review_path(path)?;
     let requested_path = repo_root.join(relative_path);
@@ -3103,6 +3149,37 @@ fn read_reference_source_file(
             canonical_file.display()
         )
     })?;
+    if bytes.contains(&0) {
+        return Err("Skipped binary reference source.".to_string());
+    }
+
+    Ok(Some((
+        String::from_utf8_lossy(&bytes).to_string(),
+        byte_size,
+    )))
+}
+
+fn read_git_reference_source_file(
+    repo_root: &Path,
+    rev: &str,
+    path: &str,
+    max_file_bytes: usize,
+) -> Result<Option<(String, usize)>, String> {
+    if rev.trim().is_empty() {
+        return Ok(None);
+    }
+    safe_relative_review_path(path)?;
+    let spec = format!("{}:{}", rev.trim(), path);
+    let bytes = match git_stdout_bytes(repo_root, &["show", &spec]) {
+        Ok(bytes) => bytes,
+        Err(_) => return Ok(None),
+    };
+    let byte_size = bytes.len();
+    if byte_size > max_file_bytes {
+        return Err(format!(
+            "Skipped large reference source ({byte_size} bytes, cap {max_file_bytes})."
+        ));
+    }
     if bytes.contains(&0) {
         return Err("Skipped binary reference source.".to_string());
     }
@@ -3536,6 +3613,7 @@ mod tests {
                     change_kind: ChangeKind::Modified,
                 },
             ],
+            diff_target: None,
             max_file_bytes: Some(1024),
             include_imports: Some(true),
         })
@@ -3562,6 +3640,53 @@ mod tests {
     }
 
     #[test]
+    fn loads_reference_sources_from_diff_target_after_side() {
+        let repo = temp_repo();
+        fs::create_dir_all(repo.join("src")).unwrap();
+        run_git(&repo, &["init"]);
+        run_git(&repo, &["config", "user.email", "review-desk@example.test"]);
+        run_git(&repo, &["config", "user.name", "Review Desk Test"]);
+
+        fs::write(
+            repo.join("src/state.tsx"),
+            "export const value = 'before';\n",
+        )
+        .unwrap();
+        run_git(&repo, &["add", "src/state.tsx"]);
+        run_git(&repo, &["commit", "-m", "before"]);
+        let base = git_stdout(&repo, &["rev-parse", "HEAD"]).unwrap();
+
+        fs::write(
+            repo.join("src/state.tsx"),
+            "export const value = 'after';\n",
+        )
+        .unwrap();
+        run_git(&repo, &["add", "src/state.tsx"]);
+        run_git(&repo, &["commit", "-m", "after"]);
+        let head = git_stdout(&repo, &["rev-parse", "HEAD"]).unwrap();
+
+        run_git(&repo, &["checkout", base.trim()]);
+
+        let sources = load_review_reference_sources_inner(LoadReviewReferenceSourcesRequest {
+            repo_path: repo.display().to_string(),
+            files: vec![ReviewReferenceSourceRequestFile {
+                path: "src/state.tsx".to_string(),
+                change_kind: ChangeKind::Modified,
+            }],
+            diff_target: Some(format!("{}..{}", base.trim(), head.trim())),
+            max_file_bytes: Some(1024),
+            include_imports: Some(false),
+        })
+        .unwrap();
+
+        assert_eq!(sources.files.len(), 1);
+        assert!(sources.files[0].content.contains("'after'"));
+        assert!(!sources.files[0].content.contains("'before'"));
+
+        fs::remove_dir_all(repo).unwrap();
+    }
+
+    #[test]
     fn rejects_reference_source_paths_outside_repo() {
         let repo = temp_repo();
         fs::create_dir_all(&repo).unwrap();
@@ -3573,6 +3698,7 @@ mod tests {
                 path: "../secret.ts".to_string(),
                 change_kind: ChangeKind::Modified,
             }],
+            diff_target: None,
             max_file_bytes: Some(1024),
             include_imports: Some(true),
         })
@@ -4126,6 +4252,50 @@ mod tests {
         assert_eq!(first.id, second.id);
         assert_ne!(first.snapshot_hash, second.snapshot_hash);
         assert!(second.files.iter().any(|file| file.path == "src.rs"));
+
+        fs::remove_dir_all(repo).unwrap();
+    }
+
+    #[test]
+    fn branch_worktree_uses_merge_base_when_base_branch_has_advanced() {
+        let repo = temp_repo();
+        fs::create_dir_all(&repo).unwrap();
+        fs::write(repo.join("README.md"), "initial\n").unwrap();
+        run_git(&repo, &["init"]);
+        run_git(&repo, &["config", "user.email", "review-desk@example.test"]);
+        run_git(&repo, &["config", "user.name", "Review Desk Test"]);
+        run_git(&repo, &["add", "README.md"]);
+        run_git(&repo, &["commit", "-m", "initial"]);
+        run_git(&repo, &["branch", "-m", "main"]);
+        run_git(&repo, &["checkout", "-b", "feature"]);
+        fs::write(repo.join("feature.txt"), "committed\n").unwrap();
+        run_git(&repo, &["add", "feature.txt"]);
+        run_git(&repo, &["commit", "-m", "feature"]);
+        run_git(&repo, &["checkout", "main"]);
+        fs::write(repo.join("main-only.txt"), "unrelated\n").unwrap();
+        run_git(&repo, &["add", "main-only.txt"]);
+        run_git(&repo, &["commit", "-m", "advance main"]);
+        run_git(&repo, &["checkout", "feature"]);
+        fs::write(repo.join("feature.txt"), "committed\ndirty\n").unwrap();
+
+        let session = create_review_session(CreateReviewSessionRequest {
+            repo_path: repo.display().to_string(),
+            base_ref: None,
+            head_ref: None,
+            target: Some(ReviewTargetRequest::Branch {
+                base_ref: "main".to_string(),
+                head_ref: "WORKTREE".to_string(),
+            }),
+        })
+        .unwrap();
+        let paths = session
+            .files
+            .iter()
+            .map(|file| file.path.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(paths.contains(&"feature.txt"));
+        assert!(!paths.contains(&"main-only.txt"));
 
         fs::remove_dir_all(repo).unwrap();
     }

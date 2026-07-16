@@ -79,7 +79,9 @@ export type TopBarProps = {
 };
 
 export function TopBar(props: TopBarProps) {
-  const repoLabel = guessRepoLabel(props.repoRefs?.root ?? props.repoPath);
+  const repoLabel = guessRepoLabel(
+    props.repoRefs?.identityRoot ?? props.repoRefs?.root ?? props.repoPath,
+  );
   return (
     <div className="shrink-0">
       <header className="flex h-11 items-center gap-2 border-b border-[var(--rd-hair)] bg-[var(--rd-ink)] px-3">

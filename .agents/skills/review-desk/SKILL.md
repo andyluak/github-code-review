@@ -82,6 +82,14 @@ conceptual overview, not the full generated file graph. The CLI keeps generated
 file nodes and edges as drilldown metadata, and agents should attach overview
 metadata that maps conceptual nodes to session groups or files.
 
+For feature PRs, the overview must be product-flow-first. Start with the
+pre-existing setup and the new user/admin workflow end to end, then attach
+backend/frontend implementation details as drilldown. Do not make the first view
+a React component/form inventory unless the feature itself is only a UI refactor.
+Example shape: pre-existing prerequisite -> pre-existing configuration -> new
+input/setup step -> new primary user workflow -> new management actions -> new
+admin/diagnostics workflow.
+
 Agents should use the CLI for this state:
 
 ```bash
@@ -145,13 +153,23 @@ only when the user asks for session creation and a map in one step.
 For complex PRs, author a layered map:
 
 1. Use the ordered session groups/files as the file-review source of truth.
-2. Write a compact Mermaid overview that names the concepts/data flow a reviewer
-   needs first.
-3. Attach overview metadata with `review-desk diagrams update --format json --stdin`.
-4. Map each overview node to one or more session `groups`, `paths`, or `fileIds`.
-5. Avoid showing the full file graph as the first view. Use raw Mermaid-only
+2. Write a compact Mermaid overview that names the user-visible product flow a
+   reviewer needs first, including pre-existing prerequisites and new behavior.
+3. Layer backend-to-frontend implementation boundaries under that flow: backend
+   controllers/providers/API contracts, generated/client query contracts, then
+   UI/admin surfaces.
+4. Attach overview metadata with `review-desk diagrams update --format json --stdin`.
+5. Map each overview node to one or more session `groups`, `paths`, or `fileIds`.
+6. Avoid showing the full file graph as the first view. Use raw Mermaid-only
    updates only when the user asked for a visual tweak and drilldown metadata is
    not needed.
+
+When the user gives or clarifies the intended product flow, use that exact flow
+as the overview narrative. Use neutral examples in this skill, not examples from
+the user's current project. For example, for a social posting feature the
+overview might read like: pre-existing account login -> pre-existing page/admin
+permissions -> new draft composer -> new media/link preview preparation -> new
+schedule/publish action -> new post insights and moderation tools.
 
 Overview metadata JSON:
 

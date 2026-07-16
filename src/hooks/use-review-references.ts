@@ -93,6 +93,7 @@ async function buildReferenceIndex(
       path: file.path,
       changeKind: file.changeKind,
     })),
+    diffTarget: session.patchArtifact.diffTarget,
     includeImports: true,
     maxFileBytes: MAX_REFERENCE_SOURCE_BYTES,
   });

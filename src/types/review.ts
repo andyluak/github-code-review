@@ -54,6 +54,7 @@ export type LoadReviewAssetPreviewRequest = {
 export type LoadReviewReferenceSourcesRequest = {
   repoPath: string;
   files: ReviewReferenceSourceRequestFile[];
+  diffTarget?: string | null;
   maxFileBytes?: number;
   includeImports?: boolean;
 };
@@ -129,6 +130,7 @@ export type ActiveReviewSession = {
 export type RepoRefs = {
   requestedPath: string;
   root: string;
+  identityRoot: string;
   currentBranch: string;
   defaultBranch?: string | null;
   headSha: string;

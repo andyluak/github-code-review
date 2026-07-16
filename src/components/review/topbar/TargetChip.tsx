@@ -139,7 +139,12 @@ function summarize(props: Props): string {
   if (!target) return "set target";
   switch (target.kind) {
     case "workingTree": return "uncommitted changes";
-    case "branch":      return `${target.baseRef} ← ${target.headRef}`;
+    case "branch": {
+      const base = shortRef(target.baseRef);
+      const head = shortRef(target.headRef);
+      if (base && head) return `${base} ← ${head}`;
+      return target.label || "set branch";
+    }
     case "commit":      return target.commit.slice(0, 7);
     case "commitRange": return `${target.fromRef}…${target.toRef}`;
     case "pullRequest": {

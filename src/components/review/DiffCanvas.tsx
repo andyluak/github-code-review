@@ -6,19 +6,27 @@ import {
   useMemo,
   useRef,
   useState,
+  type ClipboardEvent as ReactClipboardEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent,
+  type ReactNode,
 } from "react";
 import {
+  ChevronDown,
+  ChevronUp,
   Check,
   CornerUpLeft,
   Copy,
   FileDiff,
+  Search,
+  X,
 } from "lucide-react";
+import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
 import { useDiffViewMode, type DiffViewMode } from "@/hooks/use-diff-view-mode";
 import { isShortcutTextEntryTarget } from "@/hooks/use-keybinding";
+import { copyTextFromSelectedDiffCells } from "@/lib/diff-copy";
 import { compactPath, pathParts } from "@/lib/format";
 import { tokenizeCodeLine, type CodeToken } from "@/lib/syntax-highlight";
 import { SlabButton } from "@/components/ui/slab-button";
@@ -73,6 +81,8 @@ type DiffCanvasProps = {
   referenceWarnings: string[];
   referenceError: string | null;
   referenceBackCount: number;
+  findRequestId: number | null;
+  selectAllRequestId: number | null;
   supportsReviewComments: boolean;
   centerMode: "diff" | "map";
   onCenterModeChange: (mode: "diff" | "map") => void;
@@ -125,6 +135,19 @@ type CommentTarget = {
 type AnchoredDiffLine = {
   line: DiffLine;
   anchor: LineAnchor;
+};
+
+type FindMatch = {
+  id: string;
+  diffPosition: number;
+  start: number;
+  length: number;
+};
+
+type FindRenderState = {
+  query: string;
+  diffPosition: number;
+  activeMatch: FindMatch | null;
 };
 
 type ThreadsByAnchor = Map<string, ReviewThread[]>;
@@ -194,6 +217,8 @@ export const DiffCanvas = memo(function DiffCanvas({
   referenceWarnings,
   referenceError,
   referenceBackCount,
+  findRequestId,
+  selectAllRequestId,
   supportsReviewComments,
   centerMode,
   onCenterModeChange,
@@ -221,8 +246,12 @@ export const DiffCanvas = memo(function DiffCanvas({
     "idle" | "loading" | "error"
   >("idle");
   const [assetPreviewError, setAssetPreviewError] = useState<string | null>(null);
+  const [findOpen, setFindOpen] = useState(false);
+  const [findQuery, setFindQuery] = useState("");
+  const [activeFindIndex, setActiveFindIndex] = useState(0);
   const diffContainerRef = useRef<HTMLDivElement | null>(null);
   const scrollViewportRef = useRef<HTMLDivElement | null>(null);
+  const findInputRef = useRef<HTMLInputElement | null>(null);
   const lineSelectionDragRef = useRef(false);
   const shouldPreviewImageAsset = Boolean(
     file &&
@@ -374,9 +403,117 @@ export const DiffCanvas = memo(function DiffCanvas({
       buildSplitRows(hunk.lines, file.changeKind, hunkIndex),
     );
   }, [effectiveMode, file, isOneSided]);
+  const findMatches = useMemo(
+    () => buildFindMatches(file, findQuery),
+    [file, findQuery],
+  );
+  const activeFindMatch =
+    findMatches.length > 0
+      ? findMatches[Math.min(activeFindIndex, findMatches.length - 1)]
+      : null;
+
+  useEffect(() => {
+    if (findRequestId === null) {
+      return;
+    }
+    setFindOpen(true);
+    window.requestAnimationFrame(() => {
+      findInputRef.current?.focus();
+      findInputRef.current?.select();
+    });
+  }, [findRequestId]);
+
+  useEffect(() => {
+    if (selectAllRequestId === null) {
+      return;
+    }
+    selectAllDiffCodeCells(
+      diffContainerRef.current,
+      file?.changeKind === "deleted" ? "old" : "new",
+    );
+    scrollViewportRef.current?.focus({ preventScroll: true });
+  }, [file?.changeKind, selectAllRequestId]);
+
+  useEffect(() => {
+    setActiveFindIndex(0);
+  }, [file?.id, findQuery]);
+
+  useEffect(() => {
+    if (activeFindIndex < findMatches.length || findMatches.length === 0) {
+      return;
+    }
+    setActiveFindIndex(findMatches.length - 1);
+  }, [activeFindIndex, findMatches.length]);
+
+  useEffect(() => {
+    if (!findOpen || !activeFindMatch) {
+      return;
+    }
+    const container = diffContainerRef.current;
+    if (!container) {
+      return;
+    }
+    const target = container.querySelector<HTMLElement>(
+      `[data-anchor="${activeFindMatch.diffPosition}"]`,
+    );
+    if (!target) {
+      return;
+    }
+    target.scrollIntoView({ block: "center", behavior: "instant" });
+    target.classList.remove("rd-jump-flash");
+    void target.offsetWidth;
+    target.classList.add("rd-jump-flash");
+    const flashTimer = window.setTimeout(() => {
+      target.classList.remove("rd-jump-flash");
+    }, 900);
+    return () => {
+      window.clearTimeout(flashTimer);
+      target.classList.remove("rd-jump-flash");
+    };
+  }, [activeFindMatch, findOpen]);
+
+  const moveFindMatch = useCallback(
+    (direction: 1 | -1) => {
+      if (findMatches.length === 0) {
+        return;
+      }
+      setActiveFindIndex((current) =>
+        (current + direction + findMatches.length) % findMatches.length,
+      );
+    },
+    [findMatches.length],
+  );
+
+  const handleDiffCopy = useCallback((event: ReactClipboardEvent<HTMLDivElement>) => {
+    const text = diffClipboardTextFromSelection(
+      diffContainerRef.current,
+      window.getSelection(),
+    );
+    if (text === null) {
+      return;
+    }
+    event.preventDefault();
+    event.clipboardData.setData("text/plain", text);
+  }, []);
 
   const handleDiffViewportKeyDown = useCallback(
     (event: ReactKeyboardEvent<HTMLDivElement>) => {
+      if (
+        !event.defaultPrevented &&
+        (event.metaKey || event.ctrlKey) &&
+        !event.altKey &&
+        !event.shiftKey &&
+        event.key.toLowerCase() === "a" &&
+        !isShortcutTextEntryTarget(event.target)
+      ) {
+        event.preventDefault();
+        selectAllDiffCodeCells(
+          diffContainerRef.current,
+          file?.changeKind === "deleted" ? "old" : "new",
+        );
+        return;
+      }
+
       if (
         event.defaultPrevented ||
         event.metaKey ||
@@ -421,7 +558,7 @@ export const DiffCanvas = memo(function DiffCanvas({
         Math.min(nextTop, viewport.scrollHeight - viewport.clientHeight),
       );
     },
-    [],
+    [file?.changeKind],
   );
 
   function openInlineComposer(anchor: LineAnchor, extendSelection: boolean) {
@@ -635,6 +772,25 @@ export const DiffCanvas = memo(function DiffCanvas({
           ref back
         </SlabButton>
 
+        <span className="self-stretch w-px bg-[var(--rd-hair)]" aria-hidden />
+
+        <SlabButton
+          variant={findOpen ? "active" : "default"}
+          onClick={() => {
+            setFindOpen((current) => !current);
+            window.requestAnimationFrame(() => {
+              findInputRef.current?.focus();
+              findInputRef.current?.select();
+            });
+          }}
+          aria-pressed={findOpen}
+          aria-label="Find in file"
+          title="Find in file: Cmd/Ctrl + F"
+        >
+          <Search className="mr-1 size-3" />
+          find
+        </SlabButton>
+
         <div className="flex-1" />
 
         <SlabButton
@@ -656,11 +812,82 @@ export const DiffCanvas = memo(function DiffCanvas({
         </SlabButton>
       </div>
 
+      {findOpen ? (
+        <div className="flex shrink-0 items-center gap-2 border-b border-[var(--rd-hair)] bg-[var(--rd-ink-2)] px-6 py-2">
+          <div className="relative min-w-[240px] max-w-[520px] flex-1">
+            <Search className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-[var(--rd-pencil)]" />
+            <Input
+              ref={findInputRef}
+              type="search"
+              value={findQuery}
+              onChange={(event) => setFindQuery(event.currentTarget.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  setFindOpen(false);
+                  scrollViewportRef.current?.focus({ preventScroll: true });
+                  return;
+                }
+                if (event.key !== "Enter" || event.nativeEvent.isComposing) {
+                  return;
+                }
+                event.preventDefault();
+                moveFindMatch(event.shiftKey ? -1 : 1);
+              }}
+              placeholder="Find in file"
+              aria-label="Find in file"
+              className="h-7 rounded-none border border-[var(--rd-hair)] bg-[var(--rd-ink)] pl-7 pr-2 font-mono text-[11px] text-[var(--rd-cream)] placeholder:text-[var(--rd-pencil)] focus-visible:border-[var(--rd-vermillion-line)] focus-visible:ring-0"
+            />
+          </div>
+          <div className="w-20 text-right font-mono text-[10.5px] tabular-nums text-[var(--rd-pencil)]">
+            {findQuery
+              ? findMatches.length > 0
+                ? `${Math.min(activeFindIndex + 1, findMatches.length)} / ${findMatches.length}`
+                : "0 / 0"
+              : ""}
+          </div>
+          <div className="flex items-stretch border border-[var(--rd-hair)] divide-x divide-[var(--rd-hair)]">
+            <SlabButton
+              size="compact"
+              variant="default"
+              disabled={findMatches.length === 0}
+              onClick={() => moveFindMatch(-1)}
+              aria-label="Previous match"
+              title="Previous match: Shift + Enter"
+            >
+              <ChevronUp className="size-3" />
+            </SlabButton>
+            <SlabButton
+              size="compact"
+              variant="default"
+              disabled={findMatches.length === 0}
+              onClick={() => moveFindMatch(1)}
+              aria-label="Next match"
+              title="Next match: Enter"
+            >
+              <ChevronDown className="size-3" />
+            </SlabButton>
+            <SlabButton
+              size="compact"
+              variant="default"
+              onClick={() => {
+                setFindOpen(false);
+                scrollViewportRef.current?.focus({ preventScroll: true });
+              }}
+              aria-label="Close find"
+            >
+              <X className="size-3" />
+            </SlabButton>
+          </div>
+        </div>
+      ) : null}
+
       <ScrollArea
         className="min-h-0 flex-1"
         viewportRef={scrollViewportRef}
         viewportProps={{
           "aria-label": `Diff for ${file.path}`,
+          onCopy: handleDiffCopy,
           onKeyDown: handleDiffViewportKeyDown,
           role: "region",
           tabIndex: 0,
@@ -699,6 +926,8 @@ export const DiffCanvas = memo(function DiffCanvas({
                             row={row}
                             oldReferenceLine={row.old ? referenceLineForAnchor(file, row.old.anchor) : null}
                             newReferenceLine={row.new ? referenceLineForAnchor(file, row.new.anchor) : null}
+                            findQuery={findQuery}
+                            activeFindMatch={activeFindMatch}
                             selected={positions.some((position) =>
                               isTargetSelected(draftTarget, position),
                             )}
@@ -797,6 +1026,8 @@ export const DiffCanvas = memo(function DiffCanvas({
                                   ? line.oldLine
                                   : line.newLine,
                             })}
+                            findQuery={findQuery}
+                            activeFindMatch={activeFindMatch}
                             selected={isTargetSelected(draftTarget, anchor.diffPosition)}
                             onAddComment={openInlineComposer}
                             onBeginSelection={beginInlineSelection}
@@ -891,6 +1122,8 @@ function areDiffCanvasPropsEqual(
     previous.referenceWarnings === next.referenceWarnings &&
     previous.referenceError === next.referenceError &&
     previous.referenceBackCount === next.referenceBackCount &&
+    previous.findRequestId === next.findRequestId &&
+    previous.selectAllRequestId === next.selectAllRequestId &&
     previous.supportsReviewComments === next.supportsReviewComments &&
     previous.centerMode === next.centerMode &&
     previous.onCenterModeChange === next.onCenterModeChange &&
@@ -1265,6 +1498,8 @@ const SplitRow = memo(function SplitRow({
   row,
   oldReferenceLine,
   newReferenceLine,
+  findQuery,
+  activeFindMatch,
   selected,
   onAddComment,
   onBeginSelection,
@@ -1274,6 +1509,8 @@ const SplitRow = memo(function SplitRow({
   row: SplitDisplayRow;
   oldReferenceLine: CodeReferenceLine | null;
   newReferenceLine: CodeReferenceLine | null;
+  findQuery: string;
+  activeFindMatch: FindMatch | null;
   selected: boolean;
   onAddComment: (anchor: LineAnchor, extendSelection: boolean) => void;
   onBeginSelection: (anchor: LineAnchor, extendSelection: boolean) => void;
@@ -1299,6 +1536,12 @@ const SplitRow = memo(function SplitRow({
         marker={row.old ? markerForLine(row.old.line) : ""}
         tone={oldHot ? "del" : "neutral"}
         counterpart={oldHot && row.new ? row.new.line.content : undefined}
+        copyable={Boolean(row.old)}
+        copyLayout="split"
+        copySide="old"
+        diffPosition={row.old?.anchor.diffPosition}
+        findQuery={findQuery}
+        activeFindMatch={activeFindMatch}
         onAddComment={
           row.old ? (extend) => onAddComment(row.old!.anchor, extend) : undefined
         }
@@ -1318,6 +1561,12 @@ const SplitRow = memo(function SplitRow({
         marker={row.new ? markerForLine(row.new.line) : ""}
         tone={newHot ? "add" : "neutral"}
         counterpart={newHot && row.old ? row.old.line.content : undefined}
+        copyable={Boolean(row.new)}
+        copyLayout="split"
+        copySide="new"
+        diffPosition={row.new?.anchor.diffPosition}
+        findQuery={findQuery}
+        activeFindMatch={activeFindMatch}
         onAddComment={
           row.new ? (extend) => onAddComment(row.new!.anchor, extend) : undefined
         }
@@ -1339,6 +1588,8 @@ const UnifiedRow = memo(function UnifiedRow({
   anchor,
   changeKind,
   referenceLine,
+  findQuery,
+  activeFindMatch,
   selected,
   onAddComment,
   onBeginSelection,
@@ -1349,6 +1600,8 @@ const UnifiedRow = memo(function UnifiedRow({
   anchor: LineAnchor;
   changeKind: ReviewFile["changeKind"];
   referenceLine: CodeReferenceLine | null;
+  findQuery: string;
+  activeFindMatch: FindMatch | null;
   selected: boolean;
   onAddComment: (anchor: LineAnchor, extendSelection: boolean) => void;
   onBeginSelection: (anchor: LineAnchor, extendSelection: boolean) => void;
@@ -1382,6 +1635,12 @@ const UnifiedRow = memo(function UnifiedRow({
         hot={isAddition || isDeletion}
         marker={marker}
         tone={isAddition ? "add" : isDeletion ? "del" : "neutral"}
+        copyable
+        copyLayout="unified"
+        copySide={lineSide}
+        diffPosition={anchor.diffPosition}
+        findQuery={findQuery}
+        activeFindMatch={activeFindMatch}
         onAddComment={(extend) => onAddComment(lineAnchor, extend)}
         onBeginSelection={(extend) => onBeginSelection(lineAnchor, extend)}
         onExtendSelection={() => onExtendSelection(lineAnchor)}
@@ -1638,6 +1897,12 @@ const CodeCell = memo(function CodeCell({
   marker,
   tone,
   counterpart,
+  copyable,
+  copyLayout,
+  copySide,
+  diffPosition,
+  findQuery,
+  activeFindMatch,
   onAddComment,
   onBeginSelection,
   onExtendSelection,
@@ -1650,6 +1915,12 @@ const CodeCell = memo(function CodeCell({
   marker: string;
   tone: "add" | "del" | "neutral";
   counterpart?: string;
+  copyable: boolean;
+  copyLayout: "split" | "unified";
+  copySide: InlineCommentSide;
+  diffPosition?: number;
+  findQuery: string;
+  activeFindMatch: FindMatch | null;
   onAddComment?: (extendSelection: boolean) => void;
   onBeginSelection?: (extendSelection: boolean) => void;
   onExtendSelection?: () => void;
@@ -1659,6 +1930,17 @@ const CodeCell = memo(function CodeCell({
   const canComment = Boolean(children && onAddComment);
   const canCopy = children.length > 0;
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+  const findRenderState = useMemo<FindRenderState | null>(
+    () =>
+      diffPosition === undefined
+        ? null
+        : {
+            query: findQuery,
+            diffPosition,
+            activeMatch: activeFindMatch,
+          },
+    [activeFindMatch, diffPosition, findQuery],
+  );
   const codeContent = useMemo(
     () =>
       children
@@ -1668,9 +1950,17 @@ const CodeCell = memo(function CodeCell({
             tone,
             referenceLine ?? null,
             onRequestReferences,
+            findRenderState,
           )
         : null,
-    [children, counterpart, onRequestReferences, referenceLine, tone],
+    [
+      children,
+      counterpart,
+      findRenderState,
+      onRequestReferences,
+      referenceLine,
+      tone,
+    ],
   );
 
   useEffect(() => {
@@ -1754,6 +2044,10 @@ const CodeCell = memo(function CodeCell({
         </span>
       </button>
       <div
+        data-diff-code-cell={copyable ? "true" : undefined}
+        data-diff-copy-text={copyable ? children : undefined}
+        data-diff-layout={copyable ? copyLayout : undefined}
+        data-diff-side={copyable ? copySide : undefined}
         className={[
           "min-w-0 whitespace-pre-wrap break-words px-3 pr-8 transition-colors duration-150",
           copyState === "copied" ? "bg-[var(--rd-vermillion-bg)]" : "",
@@ -1788,6 +2082,128 @@ const CodeCell = memo(function CodeCell({
     </div>
   );
 });
+
+function buildFindMatches(file: ReviewFile | null, query: string): FindMatch[] {
+  if (!file || query.length === 0) {
+    return [];
+  }
+
+  const needle = query.toLocaleLowerCase();
+  if (needle.length === 0) {
+    return [];
+  }
+
+  const matches: FindMatch[] = [];
+  file.hunks.forEach((hunk, hunkIndex) => {
+    hunk.lines.forEach((line, lineIndex) => {
+      const anchor = getLineAnchor(line, file.changeKind, hunkIndex, lineIndex);
+      const haystack = line.content.toLocaleLowerCase();
+      let start = haystack.indexOf(needle);
+      while (start >= 0) {
+        matches.push({
+          id: `${anchor.diffPosition}:${start}`,
+          diffPosition: anchor.diffPosition,
+          start,
+          length: query.length,
+        });
+        start = haystack.indexOf(needle, start + Math.max(needle.length, 1));
+      }
+    });
+  });
+
+  return matches;
+}
+
+function diffClipboardTextFromSelection(
+  root: HTMLElement | null,
+  selection: Selection | null,
+): string | null {
+  if (!root || !selection || selection.isCollapsed || selection.rangeCount === 0) {
+    return null;
+  }
+
+  const range = selection.getRangeAt(0);
+  if (!safeIntersectsNode(range, root)) {
+    return null;
+  }
+
+  const cells = Array.from(
+    root.querySelectorAll<HTMLElement>("[data-diff-code-cell='true']"),
+  )
+    .filter((cell) => safeIntersectsNode(range, cell))
+    .map((cell) => ({
+      text: cell.dataset.diffCopyText ?? "",
+      side: cell.dataset.diffSide,
+      layout: cell.dataset.diffLayout,
+    }));
+
+  if (cells.length === 0) {
+    return null;
+  }
+
+  if (cells.length === 1) {
+    return selection.toString() || cells[0].text;
+  }
+
+  const startCell = closestDiffCodeCell(root, selection.anchorNode);
+  const endCell = closestDiffCodeCell(root, selection.focusNode);
+  return copyTextFromSelectedDiffCells(cells, {
+    startSide: startCell?.dataset.diffSide,
+    endSide: endCell?.dataset.diffSide,
+    startLayout: startCell?.dataset.diffLayout,
+    endLayout: endCell?.dataset.diffLayout,
+  });
+}
+
+function selectAllDiffCodeCells(
+  root: HTMLElement | null,
+  preferredSplitSide: InlineCommentSide,
+) {
+  if (!root) {
+    return;
+  }
+  const splitSideCells = root.querySelectorAll<HTMLElement>(
+    `[data-diff-code-cell='true'][data-diff-layout='split'][data-diff-side='${preferredSplitSide}']`,
+  );
+  const cells =
+    splitSideCells.length > 0
+      ? splitSideCells
+      : root.querySelectorAll<HTMLElement>("[data-diff-code-cell='true']");
+  const first = cells[0];
+  const last = cells[cells.length - 1];
+  if (!first || !last) {
+    return;
+  }
+
+  const range = document.createRange();
+  range.setStartBefore(first);
+  range.setEndAfter(last);
+  const selection = window.getSelection();
+  selection?.removeAllRanges();
+  selection?.addRange(range);
+}
+
+function closestDiffCodeCell(root: HTMLElement, node: Node | null) {
+  if (!node) {
+    return null;
+  }
+  const element =
+    node instanceof HTMLElement
+      ? node
+      : node.parentElement instanceof HTMLElement
+        ? node.parentElement
+        : null;
+  const cell = element?.closest<HTMLElement>("[data-diff-code-cell='true']");
+  return cell && root.contains(cell) ? cell : null;
+}
+
+function safeIntersectsNode(range: Range, node: Node) {
+  try {
+    return range.intersectsNode(node);
+  } catch {
+    return false;
+  }
+}
 
 function buildSplitRows(
   lines: DiffLine[],
@@ -1898,9 +2314,10 @@ function renderCodeContent(
   tone: "add" | "del" | "neutral",
   referenceLine: CodeReferenceLine | null,
   onRequestReferences: ((origin: ReviewReferenceLookupRequest) => void) | undefined,
+  findState: FindRenderState | null,
 ) {
   if (!counterpart || content === counterpart || tone === "neutral") {
-    return renderCodeTokens(content, 0, referenceLine, onRequestReferences);
+    return renderCodeTokens(content, 0, referenceLine, onRequestReferences, findState);
   }
 
   return inlineSegments(content, counterpart).map((segment, index) => {
@@ -1912,6 +2329,7 @@ function renderCodeContent(
             segment.start,
             referenceLine,
             onRequestReferences,
+            findState,
           )}
         </Fragment>
       );
@@ -1932,6 +2350,7 @@ function renderCodeContent(
           segment.start,
           referenceLine,
           onRequestReferences,
+          findState,
         )}
       </span>
     );
@@ -1970,13 +2389,15 @@ function renderCodeTokens(
   baseOffset: number,
   referenceLine: CodeReferenceLine | null,
   onRequestReferences: ((origin: ReviewReferenceLookupRequest) => void) | undefined,
+  findState: FindRenderState | null,
 ) {
   return tokenizeCodeLine(content).map((token, index) => {
     const absoluteStart = baseOffset + token.start;
+    const tokenContent = renderFindHighlightedText(token.value, absoluteStart, findState);
     if (!referenceLine || !onRequestReferences || !isReferenceToken(token)) {
       return (
         <span key={`${index}-${token.value}-${absoluteStart}`} className={token.className}>
-          {token.value}
+          {tokenContent}
         </span>
       );
     }
@@ -2005,10 +2426,62 @@ function renderCodeTokens(
         aria-label={`Find references for ${token.value}`}
         title={`Find references for ${token.value}`}
       >
-        {token.value}
+        {tokenContent}
       </button>
     );
   });
+}
+
+function renderFindHighlightedText(
+  value: string,
+  absoluteStart: number,
+  findState: FindRenderState | null,
+) {
+  const query = findState?.query;
+  if (!query) {
+    return value;
+  }
+
+  const lowerValue = value.toLocaleLowerCase();
+  const lowerQuery = query.toLocaleLowerCase();
+  if (!lowerQuery) {
+    return value;
+  }
+
+  const parts: ReactNode[] = [];
+  let cursor = 0;
+  let matchIndex = lowerValue.indexOf(lowerQuery);
+  while (matchIndex >= 0) {
+    if (matchIndex > cursor) {
+      parts.push(value.slice(cursor, matchIndex));
+    }
+    const start = absoluteStart + matchIndex;
+    const matchText = value.slice(matchIndex, matchIndex + query.length);
+    const isActive =
+      findState.activeMatch?.diffPosition === findState.diffPosition &&
+      findState.activeMatch.start === start;
+    parts.push(
+      <span
+        key={`find-${start}`}
+        className={[
+          "rounded-[2px] px-[1px]",
+          isActive
+            ? "bg-[var(--rd-vermillion)] text-[#1A0F0A]"
+            : "bg-[var(--rd-vermillion-bg)] text-[var(--rd-cream)]",
+        ].join(" ")}
+      >
+        {matchText}
+      </span>,
+    );
+    cursor = matchIndex + query.length;
+    matchIndex = lowerValue.indexOf(lowerQuery, cursor);
+  }
+
+  if (cursor < value.length) {
+    parts.push(value.slice(cursor));
+  }
+
+  return parts.length > 0 ? parts : value;
 }
 
 function isReferenceToken(token: CodeToken) {

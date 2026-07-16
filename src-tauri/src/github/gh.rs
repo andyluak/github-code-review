@@ -1,5 +1,5 @@
 use serde::de::DeserializeOwned;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -26,7 +26,7 @@ pub fn run_gh_command(
     use std::io::{Read, Write};
     use std::process::{Command, Stdio};
 
-    let mut cmd = Command::new("gh");
+    let mut cmd = Command::new(resolve_gh_command());
     if let Some(dir) = current_dir {
         cmd.current_dir(dir);
     }
@@ -89,6 +89,49 @@ pub fn run_gh_command(
             Ok(None) => std::thread::sleep(GH_POLL_INTERVAL),
             Err(error) => return Err(classify_gh_error(&format!("wait gh: {error}"))),
         }
+    }
+}
+
+fn resolve_gh_command() -> PathBuf {
+    if let Some(path) = find_executable_in_path("gh") {
+        return path;
+    }
+
+    for candidate in ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh"] {
+        let path = PathBuf::from(candidate);
+        if is_executable(&path) {
+            return path;
+        }
+    }
+
+    PathBuf::from("gh")
+}
+
+fn find_executable_in_path(command: &str) -> Option<PathBuf> {
+    let paths = std::env::var_os("PATH")?;
+    std::env::split_paths(&paths)
+        .map(|path| path.join(command))
+        .find(|path| is_executable(path))
+}
+
+fn is_executable(path: &Path) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        return path
+            .metadata()
+            .map(|metadata| metadata.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false);
+    }
+
+    #[cfg(not(unix))]
+    {
+        true
     }
 }
 

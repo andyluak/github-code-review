@@ -7,6 +7,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   readdirSync,
   renameSync,
   rmSync,
@@ -2455,9 +2456,12 @@ function resolveTargetRequest(repoRoot, request) {
       const rawHeadRef = required(request.headRef, "head ref");
       const isWorktree = isWorktreeRef(rawHeadRef);
       const headRef = isWorktree ? "WORKTREE" : rawHeadRef;
+      const diffTarget = isWorktree
+        ? git(repoRoot, ["merge-base", baseRef, "HEAD"]).trim()
+        : `${baseRef}...${headRef}`;
       return {
         request: { kind: "branch", baseRef, headRef },
-        diffTarget: isWorktree ? baseRef : `${baseRef}...${headRef}`,
+        diffTarget,
         includeUntracked: isWorktree,
         baseRef,
         headRef: isWorktree ? null : headRef,
@@ -3323,8 +3327,31 @@ function repoStorage(repoRoot) {
 }
 
 function repoStorageKey(repoRoot) {
-  const normalizedRepoRoot = resolve(repoRoot);
-  return `${slug(basename(normalizedRepoRoot))}-${fnv1a64(normalizedRepoRoot)}`;
+  const identityRoot = repoIdentityRoot(repoRoot);
+  return `${slug(basename(identityRoot))}-${fnv1a64(identityRoot)}`;
+}
+
+function repoIdentityRoot(repoRoot) {
+  const normalizedRepoRoot = realpathSync(resolve(repoRoot));
+  const dotGit = join(normalizedRepoRoot, ".git");
+  if (!existsSync(dotGit) || statSync(dotGit).isDirectory()) {
+    return normalizedRepoRoot;
+  }
+
+  const pointer = readFileSync(dotGit, "utf8").trim();
+  const match = pointer.match(/^gitdir:\s*(.+)$/);
+  if (!match) {
+    return normalizedRepoRoot;
+  }
+
+  const gitDir = resolve(normalizedRepoRoot, match[1]);
+  const commonDirFile = join(gitDir, "commondir");
+  if (!existsSync(commonDirFile)) {
+    return normalizedRepoRoot;
+  }
+
+  const commonDir = resolve(gitDir, readFileSync(commonDirFile, "utf8").trim());
+  return basename(commonDir) === ".git" ? dirname(commonDir) : normalizedRepoRoot;
 }
 
 function reviewDeskDataDir() {

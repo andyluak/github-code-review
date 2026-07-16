@@ -56,6 +56,15 @@ try {
       "export const local = target();",
       "",
     ].join("\n"),
+    "src/state.tsx": [
+      "export function CounterWidget() {",
+      "  const [count, setCount] = useState(0);",
+      "  return <button onClick={() => {",
+      "    setCount(count + 1);",
+      "  }} />;",
+      "}",
+      "",
+    ].join("\n"),
   };
 
   const index = await buildReviewReferenceIndex(
@@ -79,6 +88,12 @@ try {
   assert(
     refs.every((ref) => ref.path !== "src/shadow.ts"),
     "does not include same-name shadowed local symbols",
+  );
+
+  const setterRefs = index.findReferences(originFor(sources, "src/state.tsx", 2, "setCount"));
+  assert(
+    setterRefs.some((ref) => ref.path === "src/state.tsx" && ref.lineNumber === 4),
+    "finds local useState setter references in callback bodies",
   );
 
   const session = {
