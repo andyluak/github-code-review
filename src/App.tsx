@@ -236,7 +236,7 @@ function App() {
   const sessionApplyId = useRef(0);
   const diagramLoadId = useRef(0);
   const workspaceLoadId = useRef(0);
-  const lastSeenActiveManifest = useRef<string | null>(null);
+  const lastSeenActiveRevision = useRef<string | null>(null);
   const activeSessionPollRef = useRef(false);
   const repoPathRef = useRef("");
   const sessionRef = useRef<ReviewSession | null>(null);
@@ -491,7 +491,7 @@ function App() {
     workspaceLoadId.current += 1;
     diagramLoadId.current += 1;
     currentSessionOpenedAtRef.current = Date.now();
-    lastSeenActiveManifest.current = null;
+    lastSeenActiveRevision.current = null;
     sessionRef.current = null;
     latestSessionRef.current = null;
     activeFileIdRef.current = null;
@@ -586,10 +586,6 @@ function App() {
     );
     setActiveFileId(fallbackActiveFileId);
 
-    if (nextSession.order.manifestPath) {
-      lastSeenActiveManifest.current = nextSession.order.manifestPath;
-    }
-
     void loadDiagramForSession(nextSession);
 
     void rememberReviewSession(nextSession)
@@ -638,12 +634,26 @@ function App() {
       if (!activeSession) {
         return;
       }
-      if (activeSession.manifestPath === lastSeenActiveManifest.current) {
-        const currentSession = sessionRef.current;
-        if (!isLiveAgentWorktreeSession(currentSession, activeSession.manifestPath)) {
+      const revision = activeReviewSessionRevision(activeSession);
+      const currentSession = sessionRef.current;
+      if (activeSession.manifestPath === currentSession?.order.manifestPath) {
+        if (revision !== lastSeenActiveRevision.current) {
+          const refreshedSession = await importActiveReviewSession({ repoPath: path });
+          if (refreshedSession) {
+            lastSeenActiveRevision.current = revision;
+            if (
+              refreshedSession.id !== currentSession.id ||
+              refreshedSession.snapshotHash !== currentSession.snapshotHash
+            ) {
+              await applySession(refreshedSession);
+            }
+          }
           return;
         }
 
+        if (!isLiveAgentWorktreeSession(currentSession, activeSession.manifestPath)) {
+          return;
+        }
         const refreshedSession = await importActiveReviewSession({ repoPath: path });
         if (
           refreshedSession &&
@@ -653,20 +663,23 @@ function App() {
         }
         return;
       }
+      if (revision === lastSeenActiveRevision.current) {
+        return;
+      }
       if (
         !shouldImportActiveSession(
           activeSession,
-          sessionRef.current,
+          currentSession,
           currentSessionOpenedAtRef.current,
         )
       ) {
         return;
       }
 
-      lastSeenActiveManifest.current = activeSession.manifestPath;
       const nextSession = await importActiveReviewSession({ repoPath: path });
       if (nextSession) {
-        if (shouldKeepCurrentSession(nextSession, sessionRef.current)) {
+        lastSeenActiveRevision.current = revision;
+        if (shouldKeepCurrentSession(nextSession, currentSession)) {
           setError("Agent session has no matching changed files. Current review kept.");
           return;
         }
@@ -735,13 +748,18 @@ function App() {
     if (!activeSession) {
       return;
     }
-    if (activeSession.manifestPath === lastSeenActiveManifest.current) {
+    const revision = activeReviewSessionRevision(activeSession);
+    if (revision === lastSeenActiveRevision.current) {
       return;
     }
+    const currentSession = sessionRef.current;
+    const isCurrentManifest =
+      activeSession.manifestPath === currentSession?.order.manifestPath;
     if (
+      !isCurrentManifest &&
       !shouldImportActiveSession(
         activeSession,
-        sessionRef.current,
+        currentSession,
         currentSessionOpenedAtRef.current,
       )
     ) {
@@ -755,15 +773,20 @@ function App() {
 
     const nextSession = await importGlobalActiveReviewSession();
     if (nextSession) {
-      if (shouldKeepCurrentSession(nextSession, sessionRef.current)) {
+      lastSeenActiveRevision.current = revision;
+      if (shouldKeepCurrentSession(nextSession, currentSession)) {
         setError("Agent session has no matching changed files. Current review kept.");
         return;
       }
       if (currentRepoPath && !sameRepoPath(nextSession.repo.root, currentRepoPath)) {
         return;
       }
-      lastSeenActiveManifest.current = activeSession.manifestPath;
-      await applySession(nextSession);
+      if (
+        nextSession.id !== currentSession?.id ||
+        nextSession.snapshotHash !== currentSession.snapshotHash
+      ) {
+        await applySession(nextSession);
+      }
       void loadRefsForRepo(nextSession.repo.root, {
         applyDefaults: false,
         loadActive: false,
@@ -1458,6 +1481,9 @@ function App() {
         setRecentRepos(repos);
         setReviewHistory(history);
 
+        await tryLoadGlobalActiveSession();
+        if (cancelled || sessionRef.current) return;
+
         const lastReviewSession = await loadLastReviewSessionSnapshot();
         if (cancelled) return;
         if (lastReviewSession) {
@@ -1475,8 +1501,6 @@ function App() {
         if (lastRepoPath) {
           setRepoPath(lastRepoPath);
           void loadRefsForRepo(lastRepoPath, { applyDefaults: true });
-        } else {
-          await tryLoadGlobalActiveSession();
         }
       } catch (caught) {
         if (!cancelled) {
@@ -1527,6 +1551,34 @@ function App() {
       window.clearInterval(timer);
     };
   }, [isLoading, repoPath, tryLoadActiveSession, tryLoadGlobalActiveSession]);
+
+  useEffect(() => {
+    if (
+      centerMode !== "map" ||
+      !session ||
+      reviewDiagram ||
+      isDiagramLoading ||
+      diagramError
+    ) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      const currentSession = sessionRef.current;
+      if (currentSession?.id === session.id) {
+        void loadDiagramForSession(currentSession);
+      }
+    }, 2500);
+
+    return () => window.clearTimeout(timer);
+  }, [
+    centerMode,
+    diagramError,
+    isDiagramLoading,
+    loadDiagramForSession,
+    reviewDiagram,
+    session,
+  ]);
 
   useEffect(() => {
     if (
@@ -2195,6 +2247,10 @@ function shouldImportActiveSession(
 
   const activatedAt = timestampValue(activeSession.activatedAt);
   return activatedAt > currentSessionOpenedAt;
+}
+
+function activeReviewSessionRevision(activeSession: ActiveReviewSession) {
+  return `${activeSession.manifestPath}\0${activeSession.manifestHash}\0${activeSession.activatedAt ?? ""}`;
 }
 
 function timestampValue(value?: string | null) {

@@ -416,6 +416,7 @@ struct ReviewOrderWarning {
 pub struct ActiveReviewSession {
     repo_root: String,
     manifest_path: String,
+    manifest_hash: String,
     activated_at: Option<String>,
     source: Option<String>,
 }
@@ -1424,10 +1425,12 @@ fn get_active_review_session_inner(
     if !manifest_path.exists() {
         return Ok(None);
     }
+    let manifest_hash = review_manifest_hash(&manifest_path)?;
 
     Ok(Some(ActiveReviewSession {
         repo_root: repo_root.display().to_string(),
         manifest_path: manifest_path.display().to_string(),
+        manifest_hash,
         activated_at: pointer.activated_at,
         source: pointer.source,
     }))
@@ -1479,10 +1482,12 @@ fn get_global_active_review_session_inner() -> Result<Option<ActiveReviewSession
     if !manifest_path.exists() {
         return Ok(None);
     }
+    let manifest_hash = review_manifest_hash(&manifest_path)?;
 
     Ok(Some(ActiveReviewSession {
         repo_root: repo_root.display().to_string(),
         manifest_path: manifest_path.display().to_string(),
+        manifest_hash,
         activated_at: pointer.activated_at,
         source: pointer.source,
     }))
@@ -1551,6 +1556,16 @@ fn read_active_pointer(
                 pointer_path.display()
             )
         })
+}
+
+fn review_manifest_hash(manifest_path: &Path) -> Result<String, String> {
+    let content = fs::read_to_string(manifest_path).map_err(|error| {
+        format!(
+            "Failed to read review session manifest {}: {error}",
+            manifest_path.display()
+        )
+    })?;
+    Ok(content_hash(&content))
 }
 
 fn active_review_session_paths(repo_root: &Path) -> Vec<PathBuf> {
@@ -2226,7 +2241,8 @@ fn best_base_ref(repo_root: &Path, remote: &str, base: &str) -> String {
 }
 
 fn git_ref_exists(repo_root: &Path, reference: &str) -> bool {
-    git_stdout(repo_root, &["rev-parse", "--verify", "--quiet", reference]).is_ok()
+    let commit = format!("{reference}^{{commit}}");
+    git_stdout(repo_root, &["cat-file", "-e", &commit]).is_ok()
 }
 
 fn rev_parse_ref(repo_root: &Path, reference: &str) -> Option<String> {
@@ -3796,6 +3812,29 @@ mod tests {
     }
 
     #[test]
+    fn rejects_well_formed_sha_when_git_object_is_missing() {
+        let repo = temp_repo();
+        fs::create_dir_all(&repo).unwrap();
+        fs::write(repo.join("README.md"), "initial\n").unwrap();
+        run_git(&repo, &["init"]);
+        run_git(&repo, &["config", "user.email", "review-desk@example.test"]);
+        run_git(&repo, &["config", "user.name", "Review Desk Test"]);
+        run_git(&repo, &["add", "README.md"]);
+        run_git(&repo, &["commit", "-m", "initial"]);
+
+        let existing_sha = git_stdout(&repo, &["rev-parse", "HEAD"]).unwrap();
+
+        assert!(git_ref_exists(&repo, "HEAD"));
+        assert!(git_ref_exists(&repo, existing_sha.trim()));
+        assert!(!git_ref_exists(
+            &repo,
+            "46175d73798645cc54271ed1e549885264c7a4a9",
+        ));
+
+        fs::remove_dir_all(repo).unwrap();
+    }
+
+    #[test]
     fn builds_stable_repo_storage_key() {
         assert_eq!(
             repo_storage_key(Path::new("/tmp/example")),
@@ -3879,6 +3918,65 @@ mod tests {
                 .unwrap()
                 .exists()
         );
+
+        std::env::remove_var("REVIEW_DESK_DATA_DIR");
+        fs::remove_dir_all(repo).unwrap();
+        fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[test]
+    fn active_review_session_reports_manifest_revision() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        let repo = temp_repo();
+        let data_dir = temp_repo();
+        fs::create_dir_all(&repo).unwrap();
+        fs::create_dir_all(&data_dir).unwrap();
+        fs::write(repo.join("README.md"), "initial\n").unwrap();
+        run_git(&repo, &["init"]);
+        run_git(&repo, &["config", "user.email", "review-desk@example.test"]);
+        run_git(&repo, &["config", "user.name", "Review Desk Test"]);
+        run_git(&repo, &["add", "README.md"]);
+        run_git(&repo, &["commit", "-m", "initial"]);
+
+        std::env::set_var("REVIEW_DESK_DATA_DIR", &data_dir);
+        let canonical_repo = repo_root(&repo.display().to_string()).unwrap();
+        let manifest_path = data_dir.join("session.review-session.json");
+        fs::write(&manifest_path, "{\"version\":1}").unwrap();
+
+        let pointer_path = app_active_review_session_path(&canonical_repo).unwrap();
+        fs::create_dir_all(pointer_path.parent().unwrap()).unwrap();
+        fs::write(
+            &pointer_path,
+            serde_json::to_string(&serde_json::json!({
+                "manifestPath": manifest_path,
+                "activatedAt": "2026-07-17T07:06:26.354Z",
+                "source": "review-desk-cli"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let first = get_active_review_session_inner(ActiveReviewSessionRequest {
+            repo_path: repo.display().to_string(),
+        })
+        .unwrap()
+        .unwrap();
+        let first = serde_json::to_value(first).unwrap();
+
+        fs::write(&manifest_path, "{\"version\":1,\"title\":\"updated\"}").unwrap();
+
+        let second = get_active_review_session_inner(ActiveReviewSessionRequest {
+            repo_path: repo.display().to_string(),
+        })
+        .unwrap()
+        .unwrap();
+        let second = serde_json::to_value(second).unwrap();
+
+        assert!(first["manifestHash"].is_string());
+        assert!(second["manifestHash"].is_string());
+        assert_ne!(first["manifestHash"], second["manifestHash"]);
+        assert_eq!(first["manifestPath"], second["manifestPath"]);
+        assert_eq!(first["activatedAt"], second["activatedAt"]);
 
         std::env::remove_var("REVIEW_DESK_DATA_DIR");
         fs::remove_dir_all(repo).unwrap();

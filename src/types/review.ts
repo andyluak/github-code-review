@@ -123,6 +123,7 @@ export type SaveReviewDiagramRequest = {
 export type ActiveReviewSession = {
   repoRoot: string;
   manifestPath: string;
+  manifestHash: string;
   activatedAt?: string | null;
   source?: string | null;
 };
