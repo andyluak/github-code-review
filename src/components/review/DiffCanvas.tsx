@@ -1526,7 +1526,7 @@ const SplitRow = memo(function SplitRow({
       data-anchor={anchor?.diffPosition}
       className={[
         "group grid min-h-6 grid-cols-[56px_minmax(0,1fr)_56px_minmax(0,1fr)] border-b border-[var(--rd-hair)] font-mono text-[12px] leading-6",
-        selected ? "shadow-[inset_3px_0_0_var(--rd-vermillion)] bg-[rgba(230,106,79,0.06)]" : "",
+        selected ? "shadow-[inset_3px_0_0_var(--rd-vermillion)] bg-[var(--rd-vermillion-bg)]" : "",
       ].join(" ")}
     >
       <LineNumber value={row.old?.line.oldLine} hot={oldHot} tone="del" />
@@ -1625,7 +1625,7 @@ const UnifiedRow = memo(function UnifiedRow({
         "group grid min-h-6 grid-cols-[48px_48px_minmax(0,1fr)] border-b border-[var(--rd-hair)] font-mono text-[12px] leading-6",
         isAddition ? "bg-[var(--rd-add-bg)]" : "",
         isDeletion ? "bg-[var(--rd-del-bg)]" : "",
-        selected ? "shadow-[inset_3px_0_0_var(--rd-vermillion)] bg-[rgba(230,106,79,0.06)]" : "",
+        selected ? "shadow-[inset_3px_0_0_var(--rd-vermillion)] bg-[var(--rd-vermillion-bg)]" : "",
       ].join(" ")}
     >
       <LineNumber value={isAddition ? null : line.oldLine} hot={isDeletion} tone="del" />
@@ -2466,7 +2466,7 @@ function renderFindHighlightedText(
         className={[
           "rounded-[2px] px-[1px]",
           isActive
-            ? "bg-[var(--rd-vermillion)] text-[#1A0F0A]"
+            ? "bg-[var(--rd-vermillion)] text-[var(--rd-ink-on-accent)]"
             : "bg-[var(--rd-vermillion-bg)] text-[var(--rd-cream)]",
         ].join(" ")}
       >

@@ -582,18 +582,18 @@ function MermaidPreview({ source }: { source: string }) {
           theme: "base",
           themeVariables: {
             darkMode: true,
-            background: "#111017",
-            mainBkg: "#1d2230",
-            secondBkg: "#18241f",
-            primaryColor: "#1d2230",
-            primaryTextColor: "#f4efe2",
-            primaryBorderColor: "#7aa2ff",
-            lineColor: "#d8d2c3",
-            secondaryColor: "#18241f",
-            tertiaryColor: "#221b28",
-            clusterBkg: "#202127",
-            clusterBorder: "#595f69",
-            edgeLabelBackground: "#111017",
+            background: "#0c111b",
+            mainBkg: "#16243a",
+            secondBkg: "#112b28",
+            primaryColor: "#16243a",
+            primaryTextColor: "#e7edf7",
+            primaryBorderColor: "#6ba7ff",
+            lineColor: "#c1ccdc",
+            secondaryColor: "#112b28",
+            tertiaryColor: "#321d2c",
+            clusterBkg: "#192536",
+            clusterBorder: "#728198",
+            edgeLabelBackground: "#0c111b",
             fontFamily: "JetBrains Mono, ui-monospace, SFMono-Regular, Menlo, monospace",
             fontSize: "14px",
           },
@@ -699,7 +699,7 @@ function MermaidPreview({ source }: { source: string }) {
     <div
       ref={viewportRef}
       className={cn(
-        "relative min-h-0 flex-1 touch-none overflow-hidden bg-[radial-gradient(circle_at_50%_0%,rgba(236,230,216,0.05),transparent_38%),var(--rd-ink)]",
+        "relative min-h-0 flex-1 touch-none overflow-hidden bg-[radial-gradient(circle_at_50%_0%,rgba(231,237,247,0.05),transparent_38%),var(--rd-ink)]",
         dragRef.current ? "cursor-grabbing" : "cursor-grab",
       )}
       onWheel={(event) => {
@@ -740,7 +740,7 @@ function MermaidPreview({ source }: { source: string }) {
       }}
     >
       <div
-        className="absolute left-3 top-3 z-10 flex items-center gap-1 rounded-md border border-[var(--rd-hair)] bg-[rgba(21,20,27,0.88)] p-1 shadow-lg backdrop-blur"
+        className="absolute left-3 top-3 z-10 flex items-center gap-1 rounded-md border border-[var(--rd-hair)] bg-[rgba(12,17,27,0.88)] p-1 shadow-lg backdrop-blur"
         onClick={(event) => event.stopPropagation()}
         onPointerDown={(event) => event.stopPropagation()}
         onPointerMove={(event) => event.stopPropagation()}
@@ -778,7 +778,7 @@ function MermaidPreview({ source }: { source: string }) {
           {Math.round(transform.scale * 100)}%
         </div>
       </div>
-      <div className="pointer-events-none absolute bottom-3 left-3 z-10 flex items-center gap-1.5 rounded-md border border-[var(--rd-hair)] bg-[rgba(21,20,27,0.78)] px-2 py-1 font-mono text-[10px] text-[var(--rd-graphite)] backdrop-blur">
+      <div className="pointer-events-none absolute bottom-3 left-3 z-10 flex items-center gap-1.5 rounded-md border border-[var(--rd-hair)] bg-[rgba(12,17,27,0.78)] px-2 py-1 font-mono text-[10px] text-[var(--rd-graphite)] backdrop-blur">
         <Move className="size-3" />
         Drag to pan. Wheel to zoom.
       </div>
@@ -877,12 +877,12 @@ function renderMetadataMermaid(
   }
 
   lines.push(
-    "  classDef file fill:#1f1d1a,stroke:#a39e92,color:#f4efe2;",
-    "  classDef test fill:#18251f,stroke:#6fa27e,color:#f4efe2;",
-    "  classDef config fill:#202336,stroke:#8794cc,color:#f4efe2;",
-    "  classDef doc fill:#27231d,stroke:#c6a15b,color:#f4efe2;",
-    "  classDef neighbor fill:#231f28,stroke:#b894d8,color:#f4efe2;",
-    "  classDef collapsed fill:#321f1a,stroke:#d65a31,color:#f4efe2;",
+    "  classDef file fill:#16243a,stroke:#91a0b5,color:#e7edf7;",
+    "  classDef test fill:#112b28,stroke:#63d6a2,color:#e7edf7;",
+    "  classDef config fill:#182744,stroke:#6ba7ff,color:#e7edf7;",
+    "  classDef doc fill:#302816,stroke:#f5b85e,color:#e7edf7;",
+    "  classDef neighbor fill:#2d203c,stroke:#b99bea,color:#e7edf7;",
+    "  classDef collapsed fill:#321d2c,stroke:#f07178,color:#e7edf7;",
   );
 
   for (const node of nodes) {

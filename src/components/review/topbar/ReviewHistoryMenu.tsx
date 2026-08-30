@@ -70,7 +70,7 @@ export function ReviewHistoryMenu({
                   <span className='min-w-0 flex-1 truncate text-[12px] font-semibold !text-[var(--rd-cream)]'>
                     {item.repoName}
                   </span>
-                  <span className='shrink-0 rounded-sm border border-[var(--rd-vermillion-line)] bg-[var(--rd-vermillion-bg)] px-1.5 py-0.5 font-mono text-[9.5px] font-semibold !text-[var(--rd-vermillion-2)] shadow-[inset_0_0_0_1px_rgba(230,106,79,0.08)]'>
+                  <span className='shrink-0 rounded-sm border border-[var(--rd-vermillion-line)] bg-[var(--rd-vermillion-bg)] px-1.5 py-0.5 font-mono text-[9.5px] font-semibold !text-[var(--rd-vermillion-2)] shadow-[inset_0_0_0_1px_rgba(107,167,255,0.08)]'>
                     {target.badge}
                   </span>
                 </span>

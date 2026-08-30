@@ -105,7 +105,7 @@ export function tokenizeCodeLine(line: string): CodeToken[] {
   if (comment) {
     tokens.push({
       value: comment,
-      className: "text-[#766d5d] italic",
+      className: "text-[#728198] italic",
       start: code.length,
     });
   }
@@ -146,38 +146,38 @@ function tokenClass(value: string, code: string, index: number) {
     (value.startsWith("'") && value.endsWith("'")) ||
     (value.startsWith("`") && value.endsWith("`"))
   ) {
-    return "text-[#cfa66b]";
+    return "text-[#9cc3ff]";
   }
 
   if (/^\d/.test(value)) {
-    return "text-[#b8a26a]";
+    return "text-[#f5b85e]";
   }
 
   if (KEYWORDS.has(value)) {
-    return "text-[#d6b86e]";
+    return "text-[#c4a7ff]";
   }
 
   if (TYPES.has(value) || /^[A-Z][A-Za-z0-9_]*$/.test(value)) {
-    return "text-[#b2bb9d]";
+    return "text-[#8fddb9]";
   }
 
   if (/^[{}()[\].,:;<>/=+\-*|&!?]+$/.test(value)) {
-    return "text-[#6e6555]";
+    return "text-[#728198]";
   }
 
   const before = code.slice(0, index).trimEnd();
   if (before.endsWith("<") || before.endsWith("</")) {
-    return "text-[#d0b36f]";
+    return "text-[#9cc3ff]";
   }
 
   const afterAttribute = code.slice(index + value.length).trimStart();
   if (afterAttribute.startsWith("=")) {
-    return "text-[#b9ad91]";
+    return "text-[#c1ccdc]";
   }
 
   if (afterAttribute.startsWith("(")) {
-    return "text-[#c9c3aa]";
+    return "text-[#b6c4d8]";
   }
 
-  return "text-[#ddd4c2]";
+  return "text-[#e7edf7]";
 }

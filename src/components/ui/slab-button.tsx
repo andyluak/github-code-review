@@ -24,13 +24,13 @@ const slabButtonVariants = cva(
         // active state (currently same visual as `primary`; kept distinct
         // so callers can express intent in the variant name).
         active: [
-          "bg-[var(--rd-vermillion)] text-[#1A0F0A]",
+          "bg-[var(--rd-vermillion)] text-[var(--rd-ink-on-accent)]",
           "hover:bg-[var(--rd-vermillion-2)]",
         ].join(" "),
 
         // Solid vermillion, bolder weight. The strongest action.
         primary: [
-          "bg-[var(--rd-vermillion)] text-[#1A0F0A] font-bold",
+          "bg-[var(--rd-vermillion)] text-[var(--rd-ink-on-accent)] font-bold",
           "hover:bg-[var(--rd-vermillion-2)]",
         ].join(" "),
 
