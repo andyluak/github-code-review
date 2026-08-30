@@ -12,7 +12,7 @@ export function EmptyState({ onPickRepo }: EmptyStateProps) {
         className="pointer-events-none absolute inset-0"
         style={{
           background:
-            "radial-gradient(circle at 18% 22%, rgba(255, 79, 63, 0.08), transparent 36%), radial-gradient(circle at 82% 78%, rgba(236, 230, 216, 0.04), transparent 32%)",
+            "radial-gradient(circle at 18% 22%, rgba(107, 167, 255, 0.10), transparent 36%), radial-gradient(circle at 82% 78%, rgba(231, 237, 247, 0.04), transparent 32%)",
         }}
         aria-hidden
       />

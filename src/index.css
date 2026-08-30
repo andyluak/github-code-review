@@ -58,36 +58,37 @@
 :root {
     --app-font-scale: 1;
 
-    /* Atelier surfaces — lifted from pure black; warm-tinted to keep editorial feel */
-    --rd-ink: #15141B;
-    --rd-ink-2: #1C1B23;
-    --rd-ink-3: #25232C;
-    --rd-ink-4: #2E2C36;
+    /* Midnight surfaces — lifted from black to keep long reviews calm. */
+    --rd-ink: #0C111B;
+    --rd-ink-2: #121A26;
+    --rd-ink-3: #192536;
+    --rd-ink-4: #223149;
 
-    /* Type colors — warm off-white scale; every pairing AA+ on ink / ink-2 */
-    --rd-cream: #ECE6D8;
-    --rd-cream-2: #C8C1B3;
-    --rd-graphite: #A39E92;
-    --rd-pencil: #8B8478;
+    /* Type colors — cool white scale; every pairing AA+ on ink / ink-2. */
+    --rd-cream: #E7EDF7;
+    --rd-cream-2: #C1CCDC;
+    --rd-graphite: #91A0B5;
+    --rd-pencil: #728198;
 
-    /* Single accent — desaturated, hue-shifted toward orange so it can't be confused with diff red */
-    --rd-vermillion: #E66A4F;
-    --rd-vermillion-2: #F08D72;
-    --rd-vermillion-bg: rgba(230, 106, 79, 0.12);
-    --rd-vermillion-line: rgba(230, 106, 79, 0.55);
+    /* Single accent — blue keeps actions separate from diff deletion/error red. */
+    --rd-vermillion: #6BA7FF;
+    --rd-vermillion-2: #9CC3FF;
+    --rd-vermillion-bg: rgba(107, 167, 255, 0.14);
+    --rd-vermillion-line: rgba(107, 167, 255, 0.60);
+    --rd-ink-on-accent: #08111F;
 
     /* Diff colors — low-alpha fills keep whole added files readable while line markers carry the state */
-    --rd-add: #72D391;
-    --rd-add-bg: rgba(114, 211, 145, 0.055);
-    --rd-add-line: rgba(114, 211, 145, 0.26);
-    --rd-del: #D85C58;
-    --rd-del-bg: rgba(216, 92, 88, 0.16);
-    --rd-del-line: rgba(216, 92, 88, 0.50);
+    --rd-add: #63D6A2;
+    --rd-add-bg: rgba(99, 214, 162, 0.07);
+    --rd-add-line: rgba(99, 214, 162, 0.28);
+    --rd-del: #F07178;
+    --rd-del-bg: rgba(240, 113, 120, 0.16);
+    --rd-del-line: rgba(240, 113, 120, 0.52);
 
-    /* Hairlines — slightly more visible against lifted ink */
-    --rd-hair: rgba(236, 230, 216, 0.08);
-    --rd-hair-2: rgba(236, 230, 216, 0.16);
-    --rd-hair-3: rgba(236, 230, 216, 0.24);
+    /* Hairlines — slightly more visible against lifted ink. */
+    --rd-hair: rgba(231, 237, 247, 0.08);
+    --rd-hair-2: rgba(231, 237, 247, 0.16);
+    --rd-hair-3: rgba(231, 237, 247, 0.24);
 
     /* shadcn baseline (kept for any unmodified shadcn primitives) */
     --background: oklch(1 0 0);
@@ -125,37 +126,37 @@
 }
 
 .dark {
-    --background: oklch(0.145 0 0);
-    --foreground: oklch(0.985 0 0);
-    --card: oklch(0.205 0 0);
-    --card-foreground: oklch(0.985 0 0);
-    --popover: oklch(0.205 0 0);
-    --popover-foreground: oklch(0.985 0 0);
-    --primary: oklch(0.922 0 0);
-    --primary-foreground: oklch(0.205 0 0);
-    --secondary: oklch(0.269 0 0);
-    --secondary-foreground: oklch(0.985 0 0);
-    --muted: oklch(0.269 0 0);
-    --muted-foreground: oklch(0.708 0 0);
-    --accent: oklch(0.269 0 0);
-    --accent-foreground: oklch(0.985 0 0);
-    --destructive: oklch(0.704 0.191 22.216);
-    --border: oklch(1 0 0 / 10%);
-    --input: oklch(1 0 0 / 15%);
-    --ring: oklch(0.556 0 0);
-    --chart-1: oklch(0.87 0 0);
-    --chart-2: oklch(0.556 0 0);
-    --chart-3: oklch(0.439 0 0);
-    --chart-4: oklch(0.371 0 0);
-    --chart-5: oklch(0.269 0 0);
-    --sidebar: oklch(0.205 0 0);
-    --sidebar-foreground: oklch(0.985 0 0);
-    --sidebar-primary: oklch(0.488 0.243 264.376);
-    --sidebar-primary-foreground: oklch(0.985 0 0);
-    --sidebar-accent: oklch(0.269 0 0);
-    --sidebar-accent-foreground: oklch(0.985 0 0);
-    --sidebar-border: oklch(1 0 0 / 10%);
-    --sidebar-ring: oklch(0.556 0 0);
+    --background: var(--rd-ink);
+    --foreground: var(--rd-cream);
+    --card: var(--rd-ink-2);
+    --card-foreground: var(--rd-cream);
+    --popover: var(--rd-ink-2);
+    --popover-foreground: var(--rd-cream);
+    --primary: var(--rd-vermillion);
+    --primary-foreground: var(--rd-ink-on-accent);
+    --secondary: var(--rd-ink-3);
+    --secondary-foreground: var(--rd-cream);
+    --muted: var(--rd-ink-3);
+    --muted-foreground: var(--rd-graphite);
+    --accent: var(--rd-ink-3);
+    --accent-foreground: var(--rd-cream);
+    --destructive: var(--rd-del);
+    --border: var(--rd-hair-2);
+    --input: var(--rd-hair-2);
+    --ring: var(--rd-vermillion-line);
+    --chart-1: var(--rd-vermillion);
+    --chart-2: var(--rd-add);
+    --chart-3: #C4A7FF;
+    --chart-4: #F5B85E;
+    --chart-5: var(--rd-del);
+    --sidebar: var(--rd-ink-2);
+    --sidebar-foreground: var(--rd-cream);
+    --sidebar-primary: var(--rd-vermillion);
+    --sidebar-primary-foreground: var(--rd-ink-on-accent);
+    --sidebar-accent: var(--rd-ink-3);
+    --sidebar-accent-foreground: var(--rd-cream);
+    --sidebar-border: var(--rd-hair-2);
+    --sidebar-ring: var(--rd-vermillion-line);
 }
 
 @layer base {
@@ -201,7 +202,7 @@ body {
 
 * {
   scrollbar-width: thin;
-  scrollbar-color: rgba(236, 230, 216, 0.10) transparent;
+  scrollbar-color: rgba(231, 237, 247, 0.10) transparent;
 }
 
 /* Functional transitions only — 120ms. */
@@ -223,7 +224,7 @@ textarea,
 }
 
 @keyframes rd-symbol-flash {
-  0%   { background-color: var(--rd-vermillion); color: #1A0F0A; }
+  0%   { background-color: var(--rd-vermillion); color: var(--rd-ink-on-accent); }
   100% { background-color: transparent; color: inherit; }
 }
 
@@ -251,13 +252,13 @@ textarea,
   .rd-symbol-flash {
     animation: none;
     background-color: var(--rd-vermillion);
-    color: #1A0F0A;
+    color: var(--rd-ink-on-accent);
   }
 }
 
 .rd-app {
   background:
-    radial-gradient(circle at 14% 0%, rgba(230, 106, 79, 0.05), transparent 38%),
+    radial-gradient(circle at 14% 0%, rgba(107, 167, 255, 0.07), transparent 38%),
     var(--rd-ink);
   color: var(--rd-cream);
 }
@@ -293,14 +294,14 @@ textarea,
 }
 
 .rd-mermaid-map .cluster rect {
-  fill: rgba(236, 230, 216, 0.045) !important;
-  stroke: rgba(236, 230, 216, 0.22) !important;
+  fill: rgba(231, 237, 247, 0.045) !important;
+  stroke: rgba(231, 237, 247, 0.22) !important;
   stroke-width: 1.2px !important;
   rx: 6px !important;
 }
 
 .rd-mermaid-map .cluster-label text {
-  fill: #f1d28f !important;
+  fill: #9cc3ff !important;
   font-size: 14px !important;
   font-weight: 650 !important;
 }
@@ -310,8 +311,8 @@ textarea,
 .rd-mermaid-map .node circle,
 .rd-mermaid-map .node ellipse,
 .rd-mermaid-map .node path {
-  fill: #1f2633 !important;
-  stroke: rgba(143, 179, 255, 0.88) !important;
+  fill: #16243a !important;
+  stroke: rgba(107, 167, 255, 0.88) !important;
   stroke-width: 1.4px !important;
   filter: drop-shadow(0 10px 22px rgba(0, 0, 0, 0.26));
 }
@@ -319,47 +320,47 @@ textarea,
 .rd-mermaid-map .node.frontend rect,
 .rd-mermaid-map .node.frontend polygon,
 .rd-mermaid-map .node.frontend path {
-  fill: #13271f !important;
-  stroke: rgba(110, 231, 183, 0.86) !important;
+  fill: #112b28 !important;
+  stroke: rgba(99, 214, 162, 0.86) !important;
 }
 
 .rd-mermaid-map .node.backend rect,
 .rd-mermaid-map .node.backend polygon,
 .rd-mermaid-map .node.backend path {
-  fill: #1d2738 !important;
-  stroke: rgba(143, 179, 255, 0.9) !important;
+  fill: #16243a !important;
+  stroke: rgba(107, 167, 255, 0.9) !important;
 }
 
 .rd-mermaid-map .node.remote rect,
 .rd-mermaid-map .node.remote polygon,
 .rd-mermaid-map .node.remote path {
-  fill: #332414 !important;
-  stroke: rgba(245, 158, 11, 0.9) !important;
+  fill: #302816 !important;
+  stroke: rgba(245, 184, 94, 0.9) !important;
 }
 
 .rd-mermaid-map .node.risk rect,
 .rd-mermaid-map .node.risk polygon,
 .rd-mermaid-map .node.risk path {
-  fill: #351d2d !important;
-  stroke: rgba(244, 114, 182, 0.92) !important;
+  fill: #321d2c !important;
+  stroke: rgba(240, 113, 120, 0.92) !important;
 }
 
 .rd-mermaid-map .edgePaths path,
 .rd-mermaid-map .flowchart-link {
-  stroke: rgba(236, 230, 216, 0.82) !important;
+  stroke: rgba(231, 237, 247, 0.82) !important;
   stroke-width: 1.35px !important;
 }
 
 .rd-mermaid-map marker path {
-  fill: rgba(236, 230, 216, 0.82) !important;
-  stroke: rgba(236, 230, 216, 0.82) !important;
+  fill: rgba(231, 237, 247, 0.82) !important;
+  stroke: rgba(231, 237, 247, 0.82) !important;
 }
 
 .rd-mermaid-map .edgeLabel,
 .rd-mermaid-map .edgeLabel rect,
 .rd-mermaid-map .edgeLabel background {
-  background: rgba(17, 16, 23, 0.86) !important;
-  fill: rgba(17, 16, 23, 0.86) !important;
+  background: rgba(12, 17, 27, 0.86) !important;
+  fill: rgba(12, 17, 27, 0.86) !important;
   color: var(--rd-cream) !important;
 }
 
